@@ -14,15 +14,17 @@ import {
   ChevronDown
 } from 'lucide-react';
 import { useVoiceChat } from '@/hooks/useVoiceChat';
+import { getRoomShareUrl, generateRoomId } from '@/services/realtimeService';
 
 export function VoiceChatBar() {
   const [roomCode, setRoomCode] = useState(() => {
     const params = new URLSearchParams(window.location.search);
-    return params.get('room') || '0414';
+    return (params.get('roomId') || params.get('room') || '0414').toUpperCase();
   });
   const [copied, setCopied] = useState(false);
 
   const {
+    activeRoomId,
     inVoiceRoom,
     isMuted,
     isDeafened,
@@ -40,11 +42,11 @@ export function VoiceChatBar() {
 
   const [showPeers, setShowPeers] = useState(false);
 
-  // Auto-join if URL parameter ?room=... is present
+  // Auto-join if URL parameter ?roomId=... or ?room=... is present
   React.useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    if (params.has('room') && !inVoiceRoom) {
-      const code = params.get('room') || '0414';
+    if ((params.has('roomId') || params.has('room')) && !inVoiceRoom) {
+      const code = params.get('roomId') || params.get('room') || '0414';
       const timer = setTimeout(() => {
         joinVoiceRoom(code);
       }, 800);
@@ -59,10 +61,17 @@ export function VoiceChatBar() {
   };
 
   const copyShareLink = () => {
-    const shareUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    const shareUrl = getRoomShareUrl(roomCode);
     navigator.clipboard.writeText(shareUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleCreateNewRoom = () => {
+    const newId = generateRoomId();
+    setRoomCode(newId);
+    const newUrl = getRoomShareUrl(newId);
+    window.history.pushState({}, '', newUrl);
   };
 
   return (
