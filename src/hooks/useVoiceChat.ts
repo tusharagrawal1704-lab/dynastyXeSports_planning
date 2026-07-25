@@ -225,7 +225,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   };
 
   // Connect to remote peer slot with guaranteed active local stream
-  const connectToPeer = (remotePeerId: string, peer: Peer, stream: MediaStream) => {
+  const connectToPeer = useCallback((remotePeerId: string, peer: Peer, stream: MediaStream) => {
     if (!remotePeerId || remotePeerId === peer.id || callsRef.current.has(remotePeerId)) return;
     try {
       const activeStream = localStreamRef.current || stream;
@@ -257,7 +257,31 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         setupDataConnection(conn);
       }
     } catch (e) {}
-  };
+  }, []);
+
+  // Periodic Squad Mesh Health Check: Automatically connects all 5 squad slots
+  useEffect(() => {
+    if (!inVoiceRoom || !peerRef.current || !localStreamRef.current) return;
+
+    const interval = setInterval(() => {
+      const cleanCode = activeRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const currentPeer = peerRef.current;
+      const stream = localStreamRef.current;
+
+      if (!currentPeer || currentPeer.destroyed || !stream) return;
+
+      [1, 2, 3, 4, 5].forEach((s) => {
+        if (claimedSlot && s !== claimedSlot) {
+          const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
+          if (!callsRef.current.has(targetPeerId)) {
+            connectToPeer(targetPeerId, currentPeer, stream);
+          }
+        }
+      });
+    }, 2500);
+
+    return () => clearInterval(interval);
+  }, [inVoiceRoom, activeRoomId, claimedSlot, connectToPeer]);
 
   // Attempt to claim deterministic slot in Room (slot-1 to slot-5)
   const tryJoinSlot = (slotIndex: number, targetRoomId: string, stream: MediaStream) => {
@@ -285,9 +309,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
       const activeStream = localStreamRef.current || stream;
 
-      // Newly joined slot calls all existing lower slots (e.g. Slot 2 calls Slot 1)
+      // Attempt to connect to all other slots in squad
       [1, 2, 3, 4, 5].forEach((s) => {
-        if (s < slotIndex) {
+        if (s !== slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
           connectToPeer(targetPeerId, peer, activeStream);
         }
@@ -340,11 +364,17 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       const constraints: MediaStreamConstraints = {
         audio: {
           deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: { ideal: true },
+          noiseSuppression: { ideal: true },
+          autoGainControl: { ideal: true },
           channelCount: 1,
-        },
+          sampleRate: 48000,
+          googEchoCancellation: true,
+          googAutoGainControl: true,
+          googNoiseSuppression: true,
+          googHighpassFilter: true,
+          googTypingNoiseDetection: true,
+        } as any,
       };
 
       let stream: MediaStream;
