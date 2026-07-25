@@ -46,110 +46,6 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const supabaseChannelRef = useRef<any>(null);
   const isIncomingSyncRef = useRef(false);
 
-  // Initialize BroadcastChannel for local cross-tab syncing
-  useEffect(() => {
-    try {
-      const channel = new BroadcastChannel('dynastyx-tactical-sync');
-      broadcastChannelRef.current = channel;
-      channel.onmessage = (event) => {
-        if (event.data?.type === 'SYNC_STORE' && event.data?.state) {
-          isIncomingSyncRef.current = true;
-          useStrategyStore.setState(event.data.state);
-          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
-        }
-      };
-    } catch (e) {}
-    return () => {
-      broadcastChannelRef.current?.close();
-    };
-  }, []);
-
-  // Initialize Supabase Realtime broadcast channel when connected to room
-  useEffect(() => {
-    if (supabase && inVoiceRoom && activeRoomId) {
-      const channelName = `dynastyx-room:${activeRoomId.toLowerCase()}`;
-      console.log(`[Supabase Realtime] Connecting to channel: ${channelName}`);
-      const channel = supabase.channel(channelName, {
-        config: { broadcast: { self: false } },
-      });
-
-      channel.on('broadcast', { event: 'SYNC_STORE' }, (payload: any) => {
-        if (payload?.payload?.state) {
-          isIncomingSyncRef.current = true;
-          useStrategyStore.setState(payload.payload.state);
-          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
-        }
-      }).subscribe();
-
-      supabaseChannelRef.current = channel;
-
-      return () => {
-        supabase?.removeChannel(channel);
-        supabaseChannelRef.current = null;
-      };
-    }
-  }, [inVoiceRoom, activeRoomId]);
-
-  // Broadcast strategy store changes across WebRTC & Supabase Realtime
-  const broadcastStoreState = useCallback((stateSnapshot: any) => {
-    if (isIncomingSyncRef.current) return;
-    const payload = {
-      type: 'SYNC_STORE',
-      state: {
-        markers: stateSnapshot.markers,
-        players: stateSnapshot.players,
-        drawings: stateSnapshot.drawings,
-        safeZones: stateSnapshot.safeZones,
-        flightPaths: stateSnapshot.flightPaths,
-        vehiclePaths: stateSnapshot.vehiclePaths,
-      },
-    };
-
-    // 1. Broadcast across PeerJS Data Connections to remote devices
-    dataConnsRef.current.forEach((conn) => {
-      if (conn.open) {
-        conn.send(payload);
-      }
-    });
-
-    // 2. Broadcast across Supabase Realtime Channel
-    if (supabaseChannelRef.current) {
-      supabaseChannelRef.current.send({
-        type: 'broadcast',
-        event: 'SYNC_STORE',
-        payload: { state: payload.state },
-      });
-    }
-
-    // 3. Broadcast across local browser tabs
-    try {
-      broadcastChannelRef.current?.postMessage(payload);
-    } catch (e) {}
-  }, []);
-
-  // Subscribe to Zustand store mutations to trigger real-time peer sync
-  useEffect(() => {
-    const unsub = useStrategyStore.subscribe((state) => {
-      if (inVoiceRoom) {
-        broadcastStoreState(state);
-      }
-    });
-    return () => unsub();
-  }, [inVoiceRoom, broadcastStoreState]);
-
-  // Enumerate input audio devices
-  useEffect(() => {
-    if (navigator.mediaDevices?.enumerateDevices) {
-      navigator.mediaDevices.enumerateDevices().then((devices) => {
-        const audioInputs = devices.filter((d) => d.kind === 'audioinput');
-        setAudioDevices(audioInputs);
-        if (audioInputs.length > 0 && !selectedDeviceId) {
-          setSelectedDeviceId(audioInputs[0].deviceId);
-        }
-      }).catch(() => {});
-    }
-  }, []);
-
   // Attach & play remote WebRTC audio stream (Single HTML5 Audio element per peer, NEVER self stream)
   const attachRemoteAudio = useCallback((peerId: string, stream: MediaStream) => {
     if (!peerId || peerId === peerRef.current?.id) return;
@@ -260,6 +156,137 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       }
     } catch (e) {}
   }, [attachRemoteAudio]);
+
+  // Initialize Supabase Realtime presence & broadcast channel when connected to room
+  useEffect(() => {
+    if (supabase && inVoiceRoom && activeRoomId && peerRef.current) {
+      const cleanCode = activeRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const channelName = `dynastyx-room:${cleanCode}`;
+      const myPeerId = peerRef.current.id;
+
+      console.log(`[Supabase Realtime] Connecting presence channel: ${channelName} with peer: ${myPeerId}`);
+      const channel = supabase.channel(channelName, {
+        config: {
+          presence: { key: myPeerId },
+          broadcast: { self: false },
+        },
+      });
+
+      channel.on('broadcast', { event: 'SYNC_STORE' }, (payload: any) => {
+        if (payload?.payload?.state) {
+          isIncomingSyncRef.current = true;
+          useStrategyStore.setState(payload.payload.state);
+          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+        }
+      });
+
+      channel.on('presence', { event: 'sync' }, () => {
+        const state = channel.presenceState();
+        Object.keys(state).forEach((key) => {
+          state[key].forEach((pres: any) => {
+            if (pres?.peerId && pres.peerId !== peerRef.current?.id && localStreamRef.current && peerRef.current) {
+              connectToPeer(pres.peerId, peerRef.current, localStreamRef.current);
+            }
+          });
+        });
+      });
+
+      channel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await channel.track({
+            peerId: myPeerId,
+            slot: claimedSlot || 1,
+            name: userName,
+          });
+        }
+      });
+
+      supabaseChannelRef.current = channel;
+
+      return () => {
+        supabase?.removeChannel(channel);
+        supabaseChannelRef.current = null;
+      };
+    }
+  }, [inVoiceRoom, activeRoomId, claimedSlot, userName, connectToPeer]);
+
+  // Initialize BroadcastChannel for local cross-tab syncing
+  useEffect(() => {
+    try {
+      const channel = new BroadcastChannel('dynastyx-tactical-sync');
+      broadcastChannelRef.current = channel;
+      channel.onmessage = (event) => {
+        if (event.data?.type === 'SYNC_STORE' && event.data?.state) {
+          isIncomingSyncRef.current = true;
+          useStrategyStore.setState(event.data.state);
+          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+        }
+      };
+    } catch (e) {}
+    return () => {
+      broadcastChannelRef.current?.close();
+    };
+  }, []);
+
+  // Broadcast strategy store changes across WebRTC & Supabase Realtime
+  const broadcastStoreState = useCallback((stateSnapshot: any) => {
+    if (isIncomingSyncRef.current) return;
+    const payload = {
+      type: 'SYNC_STORE',
+      state: {
+        markers: stateSnapshot.markers,
+        players: stateSnapshot.players,
+        drawings: stateSnapshot.drawings,
+        safeZones: stateSnapshot.safeZones,
+        flightPaths: stateSnapshot.flightPaths,
+        vehiclePaths: stateSnapshot.vehiclePaths,
+      },
+    };
+
+    // 1. Broadcast across PeerJS Data Connections to remote devices
+    dataConnsRef.current.forEach((conn) => {
+      if (conn.open) {
+        conn.send(payload);
+      }
+    });
+
+    // 2. Broadcast across Supabase Realtime Channel
+    if (supabaseChannelRef.current) {
+      supabaseChannelRef.current.send({
+        type: 'broadcast',
+        event: 'SYNC_STORE',
+        payload: { state: payload.state },
+      });
+    }
+
+    // 3. Broadcast across local browser tabs
+    try {
+      broadcastChannelRef.current?.postMessage(payload);
+    } catch (e) {}
+  }, []);
+
+  // Subscribe to Zustand store mutations to trigger real-time peer sync
+  useEffect(() => {
+    const unsub = useStrategyStore.subscribe((state) => {
+      if (inVoiceRoom) {
+        broadcastStoreState(state);
+      }
+    });
+    return () => unsub();
+  }, [inVoiceRoom, broadcastStoreState]);
+
+  // Enumerate input audio devices
+  useEffect(() => {
+    if (navigator.mediaDevices?.enumerateDevices) {
+      navigator.mediaDevices.enumerateDevices().then((devices) => {
+        const audioInputs = devices.filter((d) => d.kind === 'audioinput');
+        setAudioDevices(audioInputs);
+        if (audioInputs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(audioInputs[0].deviceId);
+        }
+      }).catch(() => {});
+    }
+  }, []);
 
   // Periodic Squad Mesh Health Check: Automatically connects all 1..10 squad slots
   useEffect(() => {
@@ -404,7 +431,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
   // Join Voice Room
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
-    const targetRoom = (customCode || activeRoomId || '0414').trim();
+    const targetRoom = (customCode || activeRoomId || 'DX-0414').trim();
     try {
       const constraints: MediaStreamConstraints = {
         audio: {
