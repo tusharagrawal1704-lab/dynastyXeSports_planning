@@ -151,8 +151,10 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   }, []);
 
   // Attach & play remote WebRTC audio stream (Single HTML5 Audio element per peer, NEVER self stream)
-  const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
+  const attachRemoteAudio = useCallback((peerId: string, stream: MediaStream) => {
     if (!peerId || peerId === peerRef.current?.id) return;
+    if (claimedSlot && peerId.endsWith(`-slot-${claimedSlot}`)) return;
+
     try {
       let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
       if (!audioEl) {
@@ -166,7 +168,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       if (audioEl.srcObject !== stream) {
         audioEl.srcObject = stream;
       }
-      audioEl.volume = 1.0;
+      audioEl.volume = 0.85;
       audioEl.muted = isDeafened;
 
       const playPromise = audioEl.play();
@@ -184,7 +186,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     } catch (e) {
       console.warn('[Voice Stream Playback Notice]', e);
     }
-  };
+  }, [claimedSlot, isDeafened]);
 
   const removeRemoteAudio = (peerId: string) => {
     const audioEl = document.getElementById(`audio-peer-${peerId}`);
@@ -257,9 +259,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         setupDataConnection(conn);
       }
     } catch (e) {}
-  }, []);
+  }, [attachRemoteAudio]);
 
-  // Periodic Squad Mesh Health Check: Automatically connects all 5 squad slots
+  // Periodic Squad Mesh Health Check: Automatically connects all 1..10 squad slots
   useEffect(() => {
     if (!inVoiceRoom || !peerRef.current || !localStreamRef.current) return;
 
@@ -270,7 +272,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
       if (!currentPeer || currentPeer.destroyed || !stream) return;
 
-      [1, 2, 3, 4, 5].forEach((s) => {
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].forEach((s) => {
         if (claimedSlot && s !== claimedSlot) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
           if (!callsRef.current.has(targetPeerId)) {
@@ -283,13 +285,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     return () => clearInterval(interval);
   }, [inVoiceRoom, activeRoomId, claimedSlot, connectToPeer]);
 
-  // Attempt to claim deterministic slot in Room (slot-1 to slot-5)
+  // Attempt to claim deterministic slot in Room (slot-1 to slot-20 unlimited)
   const tryJoinSlot = (slotIndex: number, targetRoomId: string, stream: MediaStream) => {
-    if (slotIndex > 5) {
-      alert(`DynastyX Room ${targetRoomId} is full (5/5 teammates currently connected).`);
-      return;
-    }
-
     const cleanCode = targetRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
     const peerId = `dynastyx-${cleanCode}-slot-${slotIndex}`;
 
@@ -310,7 +307,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       const activeStream = localStreamRef.current || stream;
 
       // Attempt to connect to all other slots in squad
-      [1, 2, 3, 4, 5].forEach((s) => {
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].forEach((s) => {
         if (s !== slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
           connectToPeer(targetPeerId, peer, activeStream);
@@ -342,7 +339,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         console.log(`[PeerJS Voice] Connected audio stream from ${call.peer}`);
         attachRemoteAudio(call.peer, remoteStream);
         const slotNum = parseInt(call.peer.split('-slot-')[1] || '1', 10);
-        const rosterItem = DYNASTY_ROSTER.find((r) => r.slot === slotNum) || { name: `Player ${slotNum}`, role: 'Teammate' };
+        const rosterItem = DYNASTY_ROSTER.find((r) => r.slot === slotNum) || { name: `DXxMember-${slotNum}`, role: 'Teammate' };
         setPeers((prev) => [
           ...prev.filter((p) => p.id !== call.peer),
           { id: call.peer, slot: slotNum, name: rosterItem.name, role: rosterItem.role },
@@ -356,6 +353,54 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       });
     });
   };
+
+  // Leave Voice Room and release slot immediately
+  const leaveVoiceRoom = useCallback(() => {
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => track.stop());
+      localStreamRef.current = null;
+    }
+
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+
+    callsRef.current.forEach((call) => call.close());
+    callsRef.current.clear();
+
+    dataConnsRef.current.forEach((conn) => conn.close());
+    dataConnsRef.current.clear();
+
+    if (peerRef.current) {
+      peerRef.current.destroy();
+      peerRef.current = null;
+    }
+
+    document.querySelectorAll('audio[id^="audio-peer-"]').forEach((el) => el.remove());
+
+    setInVoiceRoom(false);
+    setIsConnected(false);
+    setAudioLevel(0);
+    setClaimedSlot(null);
+    setPeers([]);
+  }, []);
+
+  // Automatic Slot Cleanup on Page Refresh / Close Tab / Page Hide
+  useEffect(() => {
+    const handleUnload = () => {
+      leaveVoiceRoom();
+    };
+    window.addEventListener('beforeunload', handleUnload);
+    window.addEventListener('pagehide', handleUnload);
+    window.addEventListener('unload', handleUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleUnload);
+      window.removeEventListener('pagehide', handleUnload);
+      window.removeEventListener('unload', handleUnload);
+    };
+  }, [leaveVoiceRoom]);
 
   // Join Voice Room
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
@@ -418,39 +463,6 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       alert('Microphone access is required for Voice Chat. Please allow mic permissions in your browser.');
     }
   }, [activeRoomId, selectedDeviceId]);
-
-  // Leave Voice Room and release slot immediately
-  const leaveVoiceRoom = useCallback(() => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
-    }
-
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
-      audioContextRef.current = null;
-    }
-
-    callsRef.current.forEach((call) => call.close());
-    callsRef.current.clear();
-
-    dataConnsRef.current.forEach((conn) => conn.close());
-    dataConnsRef.current.clear();
-
-    if (peerRef.current) {
-      peerRef.current.destroy();
-      peerRef.current = null;
-    }
-
-    document.querySelectorAll('audio[id^="audio-peer-"]').forEach((el) => el.remove());
-
-    setInVoiceRoom(false);
-    setIsConnected(false);
-    setAudioLevel(0);
-    setClaimedSlot(null);
-    setPeers([]);
-  }, []);
 
   // Toggle Mute
   const toggleMute = useCallback(() => {
