@@ -19,6 +19,31 @@ const DYNASTY_ROSTER = [
   { slot: 5, name: 'DXxDeep', role: 'Assaulter' },
 ];
 
+const ICE_SERVERS = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:global.stun.twilio.com:3478' },
+  { urls: 'stun:openrelay.metered.ca:80' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
 export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
   const [isConnected, setIsConnected] = useState(false);
   const [inVoiceRoom, setInVoiceRoom] = useState(false);
@@ -27,8 +52,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
   const [audioLevel, setAudioLevel] = useState(0);
   const [claimedSlot, setClaimedSlot] = useState<number | null>(null);
   const [peers, setPeers] = useState<PeerUser[]>([]);
-  const [transcript, setTranscript] = useState('');
-  const [lastCommand, setLastCommand] = useState('');
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
@@ -37,6 +60,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
   const dataConnsRef = useRef<Map<string, DataConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const remoteAudioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
@@ -112,32 +136,54 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     }
   }, []);
 
-  // Attach and play remote audio stream with Autoplay bypass
+  // Play remote audio stream using Web Audio API + HTML5 Audio fallback
   const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
-    let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
-    if (!audioEl) {
-      audioEl = document.createElement('audio');
-      audioEl.id = `audio-peer-${peerId}`;
-      audioEl.autoplay = true;
-      audioEl.setAttribute('playsinline', 'true');
-      audioEl.style.display = 'none';
-      document.body.appendChild(audioEl);
-    }
-    audioEl.srcObject = stream;
-    audioEl.volume = 1.0;
-    audioEl.muted = isDeafened;
+    try {
+      // 1. Web Audio API destination (100% bypasses element autoplay restrictions)
+      if (!remoteAudioCtxRef.current) {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        remoteAudioCtxRef.current = new AudioCtx();
+      }
+      const audioCtx = remoteAudioCtxRef.current;
+      if (audioCtx.state === 'suspended') {
+        audioCtx.resume();
+      }
 
-    const playPromise = audioEl.play();
-    if (playPromise !== undefined) {
-      playPromise.catch(() => {
-        const unlockAudio = () => {
-          audioEl.play().catch(() => {});
-          document.removeEventListener('click', unlockAudio);
-          document.removeEventListener('touchstart', unlockAudio);
-        };
-        document.addEventListener('click', unlockAudio);
-        document.addEventListener('touchstart', unlockAudio);
-      });
+      const source = audioCtx.createMediaStreamSource(stream);
+      const gainNode = audioCtx.createGain();
+      gainNode.gain.value = isDeafened ? 0 : 1.0;
+      source.connect(gainNode);
+      gainNode.connect(audioCtx.destination);
+
+      // 2. HTML5 Audio DOM Element fallback
+      let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
+      if (!audioEl) {
+        audioEl = document.createElement('audio');
+        audioEl.id = `audio-peer-${peerId}`;
+        audioEl.autoplay = true;
+        audioEl.setAttribute('playsinline', 'true');
+        audioEl.style.display = 'none';
+        document.body.appendChild(audioEl);
+      }
+      audioEl.srcObject = stream;
+      audioEl.volume = 1.0;
+      audioEl.muted = isDeafened;
+
+      const playPromise = audioEl.play();
+      if (playPromise !== undefined) {
+        playPromise.catch(() => {
+          const unlock = () => {
+            audioEl.play().catch(() => {});
+            audioCtx.resume().catch(() => {});
+            document.removeEventListener('click', unlock);
+            document.removeEventListener('touchstart', unlock);
+          };
+          document.addEventListener('click', unlock);
+          document.addEventListener('touchstart', unlock);
+        });
+      }
+    } catch (e) {
+      console.warn('[Voice Stream Playback Notice]', e);
     }
   };
 
@@ -151,8 +197,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     dataConnsRef.current.set(conn.peer, conn);
 
     conn.on('open', () => {
-      console.log(`[PeerJS DataSync] Data channel opened with ${conn.peer}`);
-      // Send current state to newly connected teammate
       const currentState = useStrategyStore.getState();
       conn.send({
         type: 'SYNC_STORE',
@@ -189,6 +233,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
         callsRef.current.set(remotePeerId, call);
 
         call.on('stream', (remoteStream) => {
+          console.log(`[Voice WebRTC] Connected audio stream with ${remotePeerId}`);
           attachRemoteAudio(remotePeerId, remoteStream);
           const slotNum = parseInt(remotePeerId.split('-slot-')[1] || '1', 10);
           const rosterItem = DYNASTY_ROSTER.find((r) => r.slot === slotNum) || { name: `Player ${slotNum}`, role: 'Teammate' };
@@ -204,7 +249,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
         });
       }
 
-      // Establish real-time tactical tool data connection
       const conn = peer.connect(remotePeerId);
       if (conn) {
         setupDataConnection(conn);
@@ -224,12 +268,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
 
     const peer = new Peer(peerId, {
       config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          { urls: 'stun:stun2.l.google.com:19302' },
-          { urls: 'stun:stun3.l.google.com:19302' },
-        ],
+        iceServers: ICE_SERVERS,
       },
     });
 
@@ -241,7 +280,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
       setClaimedSlot(slotIndex);
       console.log(`[PeerJS Voice] Connected to DynastyX Room ${roomCodeStr} as Slot ${slotIndex} (${id})`);
 
-      // Connect to all other 4 slots in the same room
+      // Call all other 4 slots in the room
       [1, 2, 3, 4, 5].forEach((s) => {
         if (s !== slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
@@ -259,17 +298,17 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
       }
     });
 
-    // Handle incoming data connections
     peer.on('connection', (conn) => {
       setupDataConnection(conn);
     });
 
-    // Handle incoming calls
     peer.on('call', (call) => {
+      console.log(`[PeerJS Voice] Answering call from ${call.peer}`);
       call.answer(stream);
       callsRef.current.set(call.peer, call);
 
       call.on('stream', (remoteStream) => {
+        console.log(`[PeerJS Voice] Connected audio stream from ${call.peer}`);
         attachRemoteAudio(call.peer, remoteStream);
         const slotNum = parseInt(call.peer.split('-slot-')[1] || '1', 10);
         const rosterItem = DYNASTY_ROSTER.find((r) => r.slot === slotNum) || { name: `Player ${slotNum}`, role: 'Teammate' };
@@ -354,6 +393,11 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
       audioContextRef.current = null;
     }
 
+    if (remoteAudioCtxRef.current) {
+      remoteAudioCtxRef.current.close().catch(() => {});
+      remoteAudioCtxRef.current = null;
+    }
+
     callsRef.current.forEach((call) => call.close());
     callsRef.current.clear();
 
@@ -404,8 +448,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     audioLevel,
     claimedSlot,
     peers,
-    transcript,
-    lastCommand,
     audioDevices,
     selectedDeviceId,
     setSelectedDeviceId,

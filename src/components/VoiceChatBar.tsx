@@ -29,8 +29,6 @@ export function VoiceChatBar() {
     audioLevel,
     claimedSlot,
     peers,
-    transcript,
-    lastCommand,
     audioDevices,
     selectedDeviceId,
     setSelectedDeviceId,
@@ -255,13 +253,6 @@ export function VoiceChatBar() {
               </button>
             </div>
 
-            {/* Voice Command Assistant Banner */}
-            {lastCommand && (
-              <div className="mt-3 flex items-center gap-1.5 rounded-lg bg-primary/20 border border-primary/40 px-2.5 py-1.5 text-[11px] font-semibold text-primary">
-                <Sparkles className="h-3.5 w-3.5 text-neon" />
-                <span>Voice Command: {lastCommand}</span>
-              </div>
-            )}
           </motion.div>
         )}
       </AnimatePresence>
