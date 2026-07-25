@@ -60,7 +60,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
   const dataConnsRef = useRef<Map<string, DataConnection>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const remoteAudioCtxRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animFrameRef = useRef<number | null>(null);
 
@@ -136,26 +135,9 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     }
   }, []);
 
-  // Play remote audio stream using Web Audio API + HTML5 Audio fallback
+  // Attach and play remote audio stream (Single HTML5 Audio tag per remote peer ID)
   const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
     try {
-      // 1. Web Audio API destination (100% bypasses element autoplay restrictions)
-      if (!remoteAudioCtxRef.current) {
-        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-        remoteAudioCtxRef.current = new AudioCtx();
-      }
-      const audioCtx = remoteAudioCtxRef.current;
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-      }
-
-      const source = audioCtx.createMediaStreamSource(stream);
-      const gainNode = audioCtx.createGain();
-      gainNode.gain.value = isDeafened ? 0 : 1.0;
-      source.connect(gainNode);
-      gainNode.connect(audioCtx.destination);
-
-      // 2. HTML5 Audio DOM Element fallback
       let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
       if (!audioEl) {
         audioEl = document.createElement('audio');
@@ -174,7 +156,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
         playPromise.catch(() => {
           const unlock = () => {
             audioEl.play().catch(() => {});
-            audioCtx.resume().catch(() => {});
             document.removeEventListener('click', unlock);
             document.removeEventListener('touchstart', unlock);
           };
@@ -224,8 +205,9 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     });
   };
 
-  // Connect to remote peer slot
+  // Connect to remote peer slot (Lower slot calls higher slot only)
   const connectToPeer = (remotePeerId: string, peer: Peer, stream: MediaStream) => {
+    if (callsRef.current.has(remotePeerId)) return;
     try {
       console.log(`[Voice WebRTC] Calling remote teammate slot: ${remotePeerId}`);
       const call = peer.call(remotePeerId, stream);
@@ -245,6 +227,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
 
         call.on('close', () => {
           removeRemoteAudio(remotePeerId);
+          callsRef.current.delete(remotePeerId);
           setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
         });
       }
@@ -280,9 +263,9 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
       setClaimedSlot(slotIndex);
       console.log(`[PeerJS Voice] Connected to DynastyX Room ${roomCodeStr} as Slot ${slotIndex} (${id})`);
 
-      // Call all other 4 slots in the room
+      // Lower slot calls higher slots ONLY (avoids duplicate cross-calling & double echo)
       [1, 2, 3, 4, 5].forEach((s) => {
-        if (s !== slotIndex) {
+        if (s > slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
           connectToPeer(targetPeerId, peer, stream);
         }
@@ -303,6 +286,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     });
 
     peer.on('call', (call) => {
+      if (callsRef.current.has(call.peer)) return;
       console.log(`[PeerJS Voice] Answering call from ${call.peer}`);
       call.answer(stream);
       callsRef.current.set(call.peer, call);
@@ -320,6 +304,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
 
       call.on('close', () => {
         removeRemoteAudio(call.peer);
+        callsRef.current.delete(call.peer);
         setPeers((prev) => prev.filter((p) => p.id !== call.peer));
       });
     });
@@ -335,6 +320,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
+          channelCount: 1,
         },
       };
 
@@ -350,6 +336,7 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
         track.enabled = true;
       });
 
+      // Local Audio Level Analyzer ONLY (DO NOT connect to audioCtx.destination to prevent local echo)
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       if (audioCtx.state === 'suspended') {
         audioCtx.resume();
@@ -391,11 +378,6 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: { ro
     if (audioContextRef.current) {
       audioContextRef.current.close().catch(() => {});
       audioContextRef.current = null;
-    }
-
-    if (remoteAudioCtxRef.current) {
-      remoteAudioCtxRef.current.close().catch(() => {});
-      remoteAudioCtxRef.current = null;
     }
 
     callsRef.current.forEach((call) => call.close());
