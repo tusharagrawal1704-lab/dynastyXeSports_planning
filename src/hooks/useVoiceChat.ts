@@ -279,9 +279,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       setClaimedSlot(slotIndex);
       console.log(`[PeerJS Voice] Connected to DynastyX Room ${targetRoomId} as Slot ${slotIndex} (${id})`);
 
-      // Lower slot calls higher slots ONLY (avoids duplicate cross-calling)
+      // Newly joined slot calls all existing lower slots (e.g. Slot 2 calls Slot 1)
       [1, 2, 3, 4, 5].forEach((s) => {
-        if (s > slotIndex) {
+        if (s < slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
           connectToPeer(targetPeerId, peer, stream);
         }
