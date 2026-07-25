@@ -150,8 +150,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     }
   }, []);
 
-  // Attach & play remote WebRTC audio stream (Single HTML5 Audio element per peer)
+  // Attach & play remote WebRTC audio stream (Single HTML5 Audio element per peer, NEVER self stream)
   const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
+    if (!peerId || peerId === peerRef.current?.id) return;
     try {
       let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
       if (!audioEl) {
@@ -162,7 +163,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         audioEl.style.display = 'none';
         document.body.appendChild(audioEl);
       }
-      audioEl.srcObject = stream;
+      if (audioEl.srcObject !== stream) {
+        audioEl.srcObject = stream;
+      }
       audioEl.volume = 1.0;
       audioEl.muted = isDeafened;
 
@@ -221,12 +224,13 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     });
   };
 
-  // Connect to remote peer slot (Lower slot calls higher slot ONLY)
+  // Connect to remote peer slot with guaranteed active local stream
   const connectToPeer = (remotePeerId: string, peer: Peer, stream: MediaStream) => {
-    if (callsRef.current.has(remotePeerId)) return;
+    if (!remotePeerId || remotePeerId === peer.id || callsRef.current.has(remotePeerId)) return;
     try {
+      const activeStream = localStreamRef.current || stream;
       console.log(`[Voice WebRTC] Calling remote teammate slot: ${remotePeerId}`);
-      const call = peer.call(remotePeerId, stream);
+      const call = peer.call(remotePeerId, activeStream);
       if (call) {
         callsRef.current.set(remotePeerId, call);
 
@@ -279,11 +283,13 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       setClaimedSlot(slotIndex);
       console.log(`[PeerJS Voice] Connected to DynastyX Room ${targetRoomId} as Slot ${slotIndex} (${id})`);
 
+      const activeStream = localStreamRef.current || stream;
+
       // Newly joined slot calls all existing lower slots (e.g. Slot 2 calls Slot 1)
       [1, 2, 3, 4, 5].forEach((s) => {
         if (s < slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
-          connectToPeer(targetPeerId, peer, stream);
+          connectToPeer(targetPeerId, peer, activeStream);
         }
       });
     });
@@ -304,7 +310,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     peer.on('call', (call) => {
       if (callsRef.current.has(call.peer)) return;
       console.log(`[PeerJS Voice] Answering call from ${call.peer}`);
-      call.answer(stream);
+      const activeStream = localStreamRef.current || stream;
+      call.answer(activeStream);
       callsRef.current.set(call.peer, call);
 
       call.on('stream', (remoteStream) => {
