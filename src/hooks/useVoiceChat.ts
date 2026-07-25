@@ -3,6 +3,7 @@ import Peer, { MediaConnection, DataConnection } from 'peerjs';
 import { useStrategyStore } from '@/store/strategyStore';
 import { DEFAULT_ICE_SERVERS, getRoomIdFromUrl } from '@/services/realtimeService';
 import { supabase } from '@/services/supabaseClient';
+import { fetchRoomState, saveRoomState } from '@/services/supabaseService';
 
 export interface PeerUser {
   id: string;
@@ -157,18 +158,57 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     } catch (e) {}
   }, [attachRemoteAudio]);
 
-  // Initialize Supabase Realtime presence & broadcast channel when connected to room
+  // Load initial state from Supabase DB on room mount & subscribe to Postgres DB changes
   useEffect(() => {
-    if (supabase && inVoiceRoom && activeRoomId && peerRef.current) {
+    if (!activeRoomId) return;
+
+    // 1. Initial DB Fetch
+    fetchRoomState(activeRoomId).then((dbState) => {
+      if (dbState) {
+        isIncomingSyncRef.current = true;
+        useStrategyStore.setState(dbState);
+        setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+      }
+    });
+
+    // 2. Realtime Postgres Changes Subscription
+    if (supabase) {
+      const dbChannel = supabase
+        .channel(`db-rooms-${activeRoomId}`)
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'rooms',
+            filter: `id=eq.${activeRoomId}`,
+          },
+          (payload: any) => {
+            if (payload?.new?.state) {
+              isIncomingSyncRef.current = true;
+              useStrategyStore.setState(payload.new.state);
+              setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+            }
+          }
+        )
+        .subscribe();
+
+      return () => {
+        supabase?.removeChannel(dbChannel);
+      };
+    }
+  }, [activeRoomId]);
+
+  // Initialize Supabase Realtime Broadcast & Presence channel
+  useEffect(() => {
+    if (supabase && activeRoomId) {
       const cleanCode = activeRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
       const channelName = `dynastyx-room:${cleanCode}`;
-      const myPeerId = peerRef.current.id;
 
-      console.log(`[Supabase Realtime] Connecting presence channel: ${channelName} with peer: ${myPeerId}`);
       const channel = supabase.channel(channelName, {
         config: {
-          presence: { key: myPeerId },
           broadcast: { self: false },
+          presence: { key: peerRef.current?.id || `user-${Math.random().toString(36).substr(2, 6)}` },
         },
       });
 
@@ -192,9 +232,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       });
 
       channel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
+        if (status === 'SUBSCRIBED' && peerRef.current) {
           await channel.track({
-            peerId: myPeerId,
+            peerId: peerRef.current.id,
             slot: claimedSlot || 1,
             name: userName,
           });
@@ -208,7 +248,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         supabaseChannelRef.current = null;
       };
     }
-  }, [inVoiceRoom, activeRoomId, claimedSlot, userName, connectToPeer]);
+  }, [activeRoomId, inVoiceRoom, claimedSlot, userName, connectToPeer]);
 
   // Initialize BroadcastChannel for local cross-tab syncing
   useEffect(() => {
@@ -228,7 +268,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     };
   }, []);
 
-  // Broadcast strategy store changes across WebRTC & Supabase Realtime
+  // Broadcast strategy store changes across WebRTC, Supabase Realtime Broadcast & Supabase Database
   const broadcastStoreState = useCallback((stateSnapshot: any) => {
     if (isIncomingSyncRef.current) return;
     const payload = {
@@ -243,14 +283,17 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       },
     };
 
-    // 1. Broadcast across PeerJS Data Connections to remote devices
+    // 1. Save to Supabase Postgres Database (Guarantees persistence across devices)
+    saveRoomState(activeRoomId, stateSnapshot);
+
+    // 2. Broadcast across PeerJS Data Connections to remote devices
     dataConnsRef.current.forEach((conn) => {
       if (conn.open) {
         conn.send(payload);
       }
     });
 
-    // 2. Broadcast across Supabase Realtime Channel
+    // 3. Broadcast across Supabase Realtime Channel
     if (supabaseChannelRef.current) {
       supabaseChannelRef.current.send({
         type: 'broadcast',
@@ -259,21 +302,19 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       });
     }
 
-    // 3. Broadcast across local browser tabs
+    // 4. Broadcast across local browser tabs
     try {
       broadcastChannelRef.current?.postMessage(payload);
     } catch (e) {}
-  }, []);
+  }, [activeRoomId]);
 
-  // Subscribe to Zustand store mutations to trigger real-time peer sync
+  // Subscribe to Zustand store mutations to trigger real-time peer & DB sync
   useEffect(() => {
     const unsub = useStrategyStore.subscribe((state) => {
-      if (inVoiceRoom) {
-        broadcastStoreState(state);
-      }
+      broadcastStoreState(state);
     });
     return () => unsub();
-  }, [inVoiceRoom, broadcastStoreState]);
+  }, [broadcastStoreState]);
 
   // Enumerate input audio devices
   useEffect(() => {
@@ -332,6 +373,15 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       console.log(`[PeerJS Voice] Connected to DynastyX Room ${targetRoomId} as Slot ${slotIndex} (${id})`);
 
       const activeStream = localStreamRef.current || stream;
+
+      // Track presence on Supabase Realtime if channel is open
+      if (supabaseChannelRef.current) {
+        supabaseChannelRef.current.track({
+          peerId: id,
+          slot: slotIndex,
+          name: userName,
+        }).catch(() => {});
+      }
 
       // Attempt to connect to all other slots in squad
       [1, 2, 3, 4, 5, 6, 7, 8, 9, 10].forEach((s) => {
