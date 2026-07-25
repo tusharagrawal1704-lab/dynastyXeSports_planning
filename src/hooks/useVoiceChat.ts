@@ -218,6 +218,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   }, [activeRoomId]);
 
   // Supabase Realtime Presence & Broadcast for peer discovery and map sync
+  // IMPORTANT: Only depends on activeRoomId to prevent channel teardown/recreate loops
   useEffect(() => {
     if (!supabase || !activeRoomId) return;
 
@@ -225,7 +226,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     const channelName = `dynastyx-voice:${cleanCode}`;
     const presenceKey = myPeerIdRef.current || `anon-${Math.random().toString(36).substr(2, 6)}`;
 
-    console.log(`[Supabase Presence] Joining channel: ${channelName}, presenceKey: ${presenceKey}`);
+    console.log(`[Supabase Presence] Joining channel: ${channelName}`);
 
     const channel = supabase.channel(channelName, {
       config: {
@@ -234,51 +235,116 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       },
     });
 
+    // Helper: only the peer with the SMALLER ID initiates the call (prevents double connections & echo)
+    const shouldInitiateCall = (remotePeerId: string): boolean => {
+      const myId = myPeerIdRef.current;
+      return myId < remotePeerId;
+    };
+
+    const tryConnect = (remotePeerId: string) => {
+      if (!remotePeerId || remotePeerId === myPeerIdRef.current) return;
+      if (callsRef.current.has(remotePeerId)) return;
+      if (!peerRef.current || !localStreamRef.current) return;
+      
+      if (shouldInitiateCall(remotePeerId)) {
+        console.log(`[Presence] I initiate call to: ${remotePeerId}`);
+        const peer = peerRef.current;
+        const stream = localStreamRef.current;
+        
+        const call = peer.call(remotePeerId, stream);
+        if (call) {
+          callsRef.current.set(remotePeerId, call);
+          call.on('stream', (remoteStream) => {
+            console.log(`[Voice] ✅ Got audio from: ${remotePeerId}`);
+            // Prevent self-audio: check again
+            if (remotePeerId === myPeerIdRef.current) return;
+            
+            let audioEl = document.getElementById(`audio-peer-${remotePeerId}`) as HTMLAudioElement;
+            if (!audioEl) {
+              audioEl = document.createElement('audio');
+              audioEl.id = `audio-peer-${remotePeerId}`;
+              audioEl.autoplay = true;
+              audioEl.setAttribute('playsinline', 'true');
+              audioEl.style.display = 'none';
+              document.body.appendChild(audioEl);
+            }
+            if (audioEl.srcObject !== remoteStream) {
+              audioEl.srcObject = remoteStream;
+            }
+            audioEl.volume = 0.85;
+            audioEl.play().catch(() => {});
+            
+            setPeers((prev) => [
+              ...prev.filter((p) => p.id !== remotePeerId),
+              { id: remotePeerId, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
+            ]);
+          });
+          call.on('close', () => {
+            document.getElementById(`audio-peer-${remotePeerId}`)?.remove();
+            callsRef.current.delete(remotePeerId);
+            setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
+          });
+        }
+        
+        // Data connection for map sync
+        if (!dataConnsRef.current.has(remotePeerId)) {
+          const conn = peer.connect(remotePeerId);
+          if (conn) {
+            dataConnsRef.current.set(conn.peer, conn);
+            conn.on('open', () => {
+              const s = useStrategyStore.getState();
+              conn.send({ type: 'SYNC_STORE', state: { markers: s.markers, players: s.players, drawings: s.drawings, safeZones: s.safeZones, flightPaths: s.flightPaths, vehiclePaths: s.vehiclePaths } });
+            });
+            conn.on('data', (data: any) => {
+              if (data?.type === 'SYNC_STORE' && data?.state) {
+                isIncomingSyncRef.current = true;
+                useStrategyStore.setState(data.state);
+                setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+              }
+            });
+            conn.on('close', () => dataConnsRef.current.delete(conn.peer));
+          }
+        }
+      } else {
+        console.log(`[Presence] Waiting for ${remotePeerId} to call me (they have smaller ID)`);
+      }
+    };
+
     // Listen for map state broadcasts
     channel.on('broadcast', { event: 'SYNC_STORE' }, (payload: any) => {
       if (payload?.payload?.state) {
-        console.log('[Supabase Broadcast] ✅ Received map state sync');
         isIncomingSyncRef.current = true;
         useStrategyStore.setState(payload.payload.state);
         setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
       }
     });
 
-    // Listen for presence changes - discover other peers
+    // Discover peers via presence
     channel.on('presence', { event: 'join' }, ({ key, newPresences }: any) => {
-      console.log(`[Supabase Presence] 🟢 Peer JOINED: ${key}`, newPresences);
+      console.log(`[Presence] 🟢 Peer JOINED: ${key}`);
       newPresences.forEach((pres: any) => {
-        if (pres?.peerId && pres.peerId !== myPeerIdRef.current && peerRef.current && localStreamRef.current) {
-          console.log(`[Supabase Presence] Connecting to discovered peer: ${pres.peerId}`);
-          // Small delay to let the other peer's PeerJS fully register
-          setTimeout(() => {
-            if (peerRef.current && localStreamRef.current) {
-              connectToPeer(pres.peerId, peerRef.current, localStreamRef.current);
-            }
-          }, 1000);
+        if (pres?.peerId) {
+          setTimeout(() => tryConnect(pres.peerId), 1500);
         }
       });
     });
 
     channel.on('presence', { event: 'sync' }, () => {
       const state = channel.presenceState();
-      console.log('[Supabase Presence] Sync - all online peers:', Object.keys(state));
       Object.keys(state).forEach((key) => {
         state[key].forEach((pres: any) => {
-          if (pres?.peerId && pres.peerId !== myPeerIdRef.current && peerRef.current && localStreamRef.current) {
-            if (!callsRef.current.has(pres.peerId)) {
-              connectToPeer(pres.peerId, peerRef.current, localStreamRef.current);
-            }
+          if (pres?.peerId) {
+            tryConnect(pres.peerId);
           }
         });
       });
     });
 
     channel.on('presence', { event: 'leave' }, ({ key, leftPresences }: any) => {
-      console.log(`[Supabase Presence] 🔴 Peer LEFT: ${key}`);
+      console.log(`[Presence] 🔴 Peer LEFT: ${key}`);
       leftPresences.forEach((pres: any) => {
         if (pres?.peerId) {
-          removeRemoteAudio(pres.peerId);
+          document.getElementById(`audio-peer-${pres.peerId}`)?.remove();
           callsRef.current.get(pres.peerId)?.close();
           callsRef.current.delete(pres.peerId);
           dataConnsRef.current.get(pres.peerId)?.close();
@@ -291,14 +357,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     channel.subscribe(async (status) => {
       console.log(`[Supabase Presence] Channel status: ${status}`);
       if (status === 'SUBSCRIBED') {
-        // Track our presence with our unique PeerJS ID
-        const trackData = {
+        await channel.track({
           peerId: myPeerIdRef.current,
           name: userName,
           joinedAt: Date.now(),
-        };
-        console.log('[Supabase Presence] ✅ Tracking presence:', trackData);
-        await channel.track(trackData);
+        });
       }
     });
 
@@ -308,7 +371,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       supabase?.removeChannel(channel);
       supabaseChannelRef.current = null;
     };
-  }, [activeRoomId, inVoiceRoom, userName, connectToPeer]);
+  // ONLY activeRoomId as dependency - everything else via refs to prevent channel recreation
+  }, [activeRoomId]);
 
   // Initialize BroadcastChannel for local cross-tab syncing
   useEffect(() => {
