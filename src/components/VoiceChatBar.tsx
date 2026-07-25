@@ -42,14 +42,15 @@ export function VoiceChatBar() {
 
   const [showPeers, setShowPeers] = useState(false);
 
-  // Auto-join if URL parameter ?roomId=... or ?room=... is present
+  // Auto-set browser URL parameter and auto-join room on page load
   React.useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if ((params.has('roomId') || params.has('room')) && !inVoiceRoom) {
-      const code = params.get('roomId') || params.get('room') || '0414';
+    const currentUrl = getRoomShareUrl(roomCode);
+    window.history.replaceState({}, '', currentUrl);
+
+    if (!inVoiceRoom) {
       const timer = setTimeout(() => {
-        joinVoiceRoom(code);
-      }, 800);
+        joinVoiceRoom(roomCode);
+      }, 500);
       return () => clearTimeout(timer);
     }
   }, []);
