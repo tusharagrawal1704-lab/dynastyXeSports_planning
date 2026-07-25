@@ -16,7 +16,10 @@ import {
 import { useVoiceChat } from '@/hooks/useVoiceChat';
 
 export function VoiceChatBar() {
-  const [roomCode, setRoomCode] = useState('SQUAD-1');
+  const [roomCode, setRoomCode] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.get('room') || '0414';
+  });
   const [copied, setCopied] = useState(false);
 
   const {
@@ -34,12 +37,19 @@ export function VoiceChatBar() {
     leaveVoiceRoom,
     toggleMute,
     toggleDeafen,
-  } = useVoiceChat({ roomCode, userName: `SquadMember-${Math.floor(Math.random() * 90 + 10)}` });
+  } = useVoiceChat({ roomCode, userName: `DXxMember-${Math.floor(Math.random() * 90 + 10)}` });
 
   const [showPeers, setShowPeers] = useState(false);
 
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomCode);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  const copyShareLink = () => {
+    const shareUrl = `${window.location.origin}${window.location.pathname}?room=${roomCode}`;
+    navigator.clipboard.writeText(shareUrl);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -58,18 +68,18 @@ export function VoiceChatBar() {
               className="w-24 bg-white/5 border border-white/15 rounded-lg px-2 py-1.5 text-xs font-bold text-neon text-center focus:outline-none uppercase"
             />
             <button
-              onClick={copyRoomCode}
-              className="px-2 py-1.5 rounded-lg border border-white/10 bg-white/5 text-[10px] font-semibold text-muted-foreground hover:text-white transition-colors"
-              title="Copy Room Code"
+              onClick={copyShareLink}
+              className="px-2 py-1.5 rounded-lg border border-primary/30 bg-primary/10 text-[10px] font-bold text-primary hover:bg-primary/20 transition-colors"
+              title="Copy Teammate Share Link"
             >
-              {copied ? 'Copied!' : 'Copy'}
+              {copied ? 'Link Copied!' : 'Share Link'}
             </button>
             <button
-              onClick={joinVoiceRoom}
+              onClick={() => joinVoiceRoom(roomCode)}
               className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-all hover:bg-emerald-500 active:scale-95 glow-neon"
             >
               <PhoneCall className="h-3.5 w-3.5" />
-              <span>Join Voice ({roomCode})</span>
+              <span>Join DynastyX ({roomCode})</span>
             </button>
           </div>
         ) : (
