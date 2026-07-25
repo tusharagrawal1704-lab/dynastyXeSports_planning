@@ -34,7 +34,7 @@ export const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
 ];
 
 /**
- * Generate a unique Room ID for tactical sessions
+ * Generate a unique Room ID for tactical sessions (e.g. DX-7K9P)
  */
 export function generateRoomId(): string {
   const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
@@ -45,18 +45,27 @@ export function generateRoomId(): string {
   return result;
 }
 
+let cachedSessionRoomId: string | null = null;
+
 /**
- * Extract Room ID from URL or fallback to default room
+ * Extract Room ID from URL or generate a fresh unique session Room ID
  */
 export function getRoomIdFromUrl(): string {
-  if (typeof window === 'undefined') return '0414';
+  if (typeof window === 'undefined') return 'DX-0414';
   const params = new URLSearchParams(window.location.search);
-  const roomId = params.get('roomId') || params.get('room') || '0414';
-  return roomId.trim().toUpperCase();
+  const urlRoomId = params.get('roomId') || params.get('room');
+  if (urlRoomId && urlRoomId.trim()) {
+    cachedSessionRoomId = urlRoomId.trim().toUpperCase();
+    return cachedSessionRoomId;
+  }
+  if (!cachedSessionRoomId) {
+    cachedSessionRoomId = generateRoomId();
+  }
+  return cachedSessionRoomId;
 }
 
 /**
- * Create shareable room link
+ * Create shareable room link with explicit Room ID
  */
 export function getRoomShareUrl(roomId: string): string {
   if (typeof window === 'undefined') return '';

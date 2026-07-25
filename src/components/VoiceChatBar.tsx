@@ -10,17 +10,15 @@ import {
   Users,
   Radio,
   Sparkles,
+  Plus,
   ChevronUp,
   ChevronDown
 } from 'lucide-react';
 import { useVoiceChat } from '@/hooks/useVoiceChat';
-import { getRoomShareUrl, generateRoomId } from '@/services/realtimeService';
+import { getRoomShareUrl, generateRoomId, getRoomIdFromUrl } from '@/services/realtimeService';
 
 export function VoiceChatBar() {
-  const [roomCode, setRoomCode] = useState(() => {
-    const params = new URLSearchParams(window.location.search);
-    return (params.get('roomId') || params.get('room') || '0414').toUpperCase();
-  });
+  const [roomCode, setRoomCode] = useState(() => getRoomIdFromUrl());
   const [copied, setCopied] = useState(false);
 
   const {
@@ -69,10 +67,14 @@ export function VoiceChatBar() {
   };
 
   const handleCreateNewRoom = () => {
+    if (inVoiceRoom) leaveVoiceRoom();
     const newId = generateRoomId();
     setRoomCode(newId);
     const newUrl = getRoomShareUrl(newId);
     window.history.pushState({}, '', newUrl);
+    setTimeout(() => {
+      joinVoiceRoom(newId);
+    }, 300);
   };
 
   const handleJoinRoom = (codeToJoin: string) => {
@@ -106,6 +108,14 @@ export function VoiceChatBar() {
               title="Copy Teammate Share Link"
             >
               {copied ? 'Link Copied!' : 'Share Link'}
+            </button>
+            <button
+              onClick={handleCreateNewRoom}
+              className="flex items-center gap-1 px-2 py-1.5 rounded-lg border border-white/15 bg-white/5 text-[10px] font-bold text-white hover:bg-white/10 transition-colors"
+              title="Create New Session Room ID"
+            >
+              <Plus className="h-3 w-3" />
+              <span>New Room</span>
             </button>
             <button
               onClick={() => handleJoinRoom(roomCode)}
