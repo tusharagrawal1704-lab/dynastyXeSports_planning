@@ -45,7 +45,119 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: UseV
     }
   }, []);
 
-  // Join Voice Room via PeerJS WebRTC Cloud
+  // Attach remote audio stream
+  const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
+    let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
+    if (!audioEl) {
+      audioEl = document.createElement('audio');
+      audioEl.id = `audio-peer-${peerId}`;
+      audioEl.autoplay = true;
+      audioEl.setAttribute('playsinline', 'true');
+      document.body.appendChild(audioEl);
+    }
+    audioEl.srcObject = stream;
+    audioEl.play().catch(() => {});
+  };
+
+  const removeRemoteAudio = (peerId: string) => {
+    const audioEl = document.getElementById(`audio-peer-${peerId}`);
+    if (audioEl) audioEl.remove();
+  };
+
+  // Connect to remote peer
+  const connectToPeer = (remotePeerId: string, peer: Peer, stream: MediaStream) => {
+    try {
+      const call = peer.call(remotePeerId, stream);
+      if (!call) return;
+      callsRef.current.set(remotePeerId, call);
+
+      call.on('stream', (remoteStream) => {
+        attachRemoteAudio(remotePeerId, remoteStream);
+        const slotNum = remotePeerId.split('-slot-')[1] || '?';
+        setPeers((prev) => [
+          ...prev.filter((p) => p.id !== remotePeerId),
+          { id: remotePeerId, name: `Player ${slotNum} (Teammate)` },
+        ]);
+      });
+
+      call.on('close', () => {
+        removeRemoteAudio(remotePeerId);
+        setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
+      });
+    } catch (e) {}
+  };
+
+  // Attempt to claim deterministic slot in Room (slot-1, slot-2, slot-3, slot-4, slot-5)
+  const tryJoinSlot = (slotIndex: number, roomCodeStr: string, stream: MediaStream) => {
+    if (slotIndex > 5) {
+      console.warn('[PeerJS] Room is full (max 5 players)');
+      alert(`DynastyX Room ${roomCodeStr} is currently full (5/5 teammates connected).`);
+      return;
+    }
+
+    // Clean room code format
+    const cleanCode = roomCodeStr.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const peerId = `dynastyx-${cleanCode}-slot-${slotIndex}`;
+    console.log(`[PeerJS] Attempting to claim Slot ${slotIndex} with Peer ID: ${peerId}`);
+
+    const peer = new Peer(peerId, {
+      config: {
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' },
+          { urls: 'stun:stun2.l.google.com:19302' },
+        ],
+      },
+    });
+
+    peerRef.current = peer;
+
+    peer.on('open', (id) => {
+      setIsConnected(true);
+      setInVoiceRoom(true);
+      console.log(`[PeerJS Voice] Connected to DynastyX Room ${roomCodeStr} as Slot ${slotIndex} (${id})`);
+
+      // Connect to all other 4 slots in the same room
+      [1, 2, 3, 4, 5].forEach((s) => {
+        if (s !== slotIndex) {
+          const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
+          connectToPeer(targetPeerId, peer, stream);
+        }
+      });
+    });
+
+    peer.on('error', (err) => {
+      if (err.type === 'unavailable-id') {
+        // Slot is already claimed by host/teammate, try next slot
+        console.log(`[PeerJS] Slot ${slotIndex} occupied. Trying Slot ${slotIndex + 1}...`);
+        peer.destroy();
+        tryJoinSlot(slotIndex + 1, roomCodeStr, stream);
+      } else {
+        console.warn('[PeerJS Notice]', err.type || err);
+      }
+    });
+
+    peer.on('call', (call) => {
+      call.answer(stream);
+      callsRef.current.set(call.peer, call);
+
+      call.on('stream', (remoteStream) => {
+        attachRemoteAudio(call.peer, remoteStream);
+        const slotNum = call.peer.split('-slot-')[1] || '?';
+        setPeers((prev) => [
+          ...prev.filter((p) => p.id !== call.peer),
+          { id: call.peer, name: `Player ${slotNum} (Teammate)` },
+        ]);
+      });
+
+      call.on('close', () => {
+        removeRemoteAudio(call.peer);
+        setPeers((prev) => prev.filter((p) => p.id !== call.peer));
+      });
+    });
+  };
+
+  // Join Voice Room
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
     const targetRoom = (customCode || roomCode || '0414').trim();
     try {
@@ -86,104 +198,14 @@ export function useVoiceChat({ roomCode = '0414', userName = 'DXxPlayer' }: UseV
       };
       updateVolume();
 
-      // Create unique peer ID in DynastyX Room
-      const randomId = Math.random().toString(36).substring(2, 7);
-      const peerId = `dynastyx-${targetRoom}-${randomId}`;
-
-      const peer = new Peer(peerId, {
-        config: {
-          iceServers: [
-            { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-          ],
-        },
-      });
-
-      peerRef.current = peer;
-
-      peer.on('open', (id) => {
-        setIsConnected(true);
-        setInVoiceRoom(true);
-        console.log('[PeerJS Voice] Connected to DynastyX Room:', targetRoom, 'My Peer ID:', id);
-
-        // Ping existing peers in Room 0414
-        ['p1', 'p2', 'p3', 'p4', 'p5', 'host', 'leader'].forEach((role) => {
-          const remotePeerId = `dynastyx-${targetRoom}-${role}`;
-          if (remotePeerId !== id) {
-            connectToPeer(remotePeerId, peer, stream);
-          }
-        });
-      });
-
-      // Handle incoming peer calls
-      peer.on('call', (call) => {
-        call.answer(stream);
-        callsRef.current.set(call.peer, call);
-
-        call.on('stream', (remoteStream) => {
-          attachRemoteAudio(call.peer, remoteStream);
-          setPeers((prev) => [
-            ...prev.filter((p) => p.id !== call.peer),
-            { id: call.peer, name: `Teammate (${call.peer.slice(-4)})` },
-          ]);
-        });
-
-        call.on('close', () => {
-          removeRemoteAudio(call.peer);
-          setPeers((prev) => prev.filter((p) => p.id !== call.peer));
-        });
-      });
-
-      peer.on('error', (err) => {
-        console.warn('[PeerJS Voice Notice]', err.type);
-      });
+      // Start attempting from Slot 1
+      tryJoinSlot(1, targetRoom, stream);
 
     } catch (err) {
       console.error('[Voice] Could not access microphone:', err);
       alert('Microphone access is required for Voice Chat. Please allow mic permissions in your browser.');
     }
   }, [roomCode, selectedDeviceId]);
-
-  // Connect to remote peer
-  const connectToPeer = (remotePeerId: string, peer: Peer, stream: MediaStream) => {
-    try {
-      const call = peer.call(remotePeerId, stream);
-      if (!call) return;
-      callsRef.current.set(remotePeerId, call);
-
-      call.on('stream', (remoteStream) => {
-        attachRemoteAudio(remotePeerId, remoteStream);
-        setPeers((prev) => [
-          ...prev.filter((p) => p.id !== remotePeerId),
-          { id: remotePeerId, name: `Teammate (${remotePeerId.slice(-4)})` },
-        ]);
-      });
-
-      call.on('close', () => {
-        removeRemoteAudio(remotePeerId);
-        setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
-      });
-    } catch (e) {}
-  };
-
-  const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
-    let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
-    if (!audioEl) {
-      audioEl = document.createElement('audio');
-      audioEl.id = `audio-peer-${peerId}`;
-      audioEl.autoplay = true;
-      audioEl.setAttribute('playsinline', 'true');
-      document.body.appendChild(audioEl);
-    }
-    audioEl.srcObject = stream;
-    audioEl.play().catch(() => {});
-  };
-
-  const removeRemoteAudio = (peerId: string) => {
-    const audioEl = document.getElementById(`audio-peer-${peerId}`);
-    if (audioEl) audioEl.remove();
-  };
 
   // Leave Voice Room
   const leaveVoiceRoom = useCallback(() => {

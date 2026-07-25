@@ -41,6 +41,18 @@ export function VoiceChatBar() {
 
   const [showPeers, setShowPeers] = useState(false);
 
+  // Auto-join if URL parameter ?room=... is present
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('room') && !inVoiceRoom) {
+      const code = params.get('room') || '0414';
+      const timer = setTimeout(() => {
+        joinVoiceRoom(code);
+      }, 800);
+      return () => clearTimeout(timer);
+    }
+  }, []);
+
   const copyRoomCode = () => {
     navigator.clipboard.writeText(roomCode);
     setCopied(true);
