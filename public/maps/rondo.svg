@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <defs>
+    <linearGradient id="rondoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b" />
+      <stop offset="50%" stop-color="#0f172a" />
+      <stop offset="100%" stop-color="#020617" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1000" height="1000" fill="#030712" />
+
+  <g stroke="rgba(99,102,241,0.2)" stroke-width="1">
+    <line x1="0" y1="0" x2="0" y2="1000" /><line x1="100" y1="0" x2="100" y2="1000" /><line x1="200" y1="0" x2="200" y2="1000" /><line x1="300" y1="0" x2="300" y2="1000" /><line x1="400" y1="0" x2="400" y2="1000" /><line x1="500" y1="0" x2="500" y2="1000" /><line x1="600" y1="0" x2="600" y2="1000" /><line x1="700" y1="0" x2="700" y2="1000" /><line x1="800" y1="0" x2="800" y2="1000" /><line x1="900" y1="0" x2="900" y2="1000" /><line x1="1000" y1="0" x2="1000" y2="1000" />
+    <line x1="0" y1="0" x2="1000" y2="0" /><line x1="0" y1="100" x2="1000" y2="100" /><line x1="0" y1="200" x2="1000" y2="200" /><line x1="0" y1="300" x2="1000" y2="300" /><line x1="0" y1="400" x2="1000" y2="400" /><line x1="0" y1="500" x2="1000" y2="500" /><line x1="0" y1="600" x2="1000" y2="600" /><line x1="0" y1="700" x2="1000" y2="700" /><line x1="0" y1="800" x2="1000" y2="800" /><line x1="0" y1="900" x2="1000" y2="900" /><line x1="0" y1="1000" x2="1000" y2="1000" />
+  </g>
+
+  <path d="M 120,120 Q 500,80 880,140 T 900,860 Q 480,920 100,840 Z" fill="url(#rondoGrad)" stroke="#6366f1" stroke-width="4" />
+
+  <g transform="translate(500,500)">
+    <rect x="-70" y="-70" width="140" height="140" fill="#6366f1" opacity="0.6" rx="12" />
+    <circle r="30" fill="#818cf8" stroke="#ffffff" stroke-width="3" />
+    <text x="0" y="95" text-anchor="middle" fill="#ffffff" font-size="18" font-weight="bold">Jadhavpur / Meyran</text>
+  </g>
+
+  <g transform="translate(250,300)">
+    <circle r="40" fill="#10b981" opacity="0.7" />
+    <text x="0" y="58" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="bold">Bamboo Forest</text>
+  </g>
+
+  <rect x="20" y="930" width="340" height="50" fill="rgba(0,0,0,0.8)" rx="10" stroke="rgba(255,255,255,0.2)" />
+  <text x="35" y="962" fill="#818cf8" font-size="22" font-family="sans-serif" font-weight="bold">RONDO <tspan fill="#ffffff" font-size="16">8x8 km Tactical</tspan></text>
+</svg>

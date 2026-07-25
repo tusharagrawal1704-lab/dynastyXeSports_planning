@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" width="1000" height="1000">
+  <defs>
+    <radialGradient id="desertWater" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#0e3a59" />
+      <stop offset="100%" stop-color="#061a29" />
+    </radialGradient>
+    <linearGradient id="desertGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#8c5828" />
+      <stop offset="50%" stop-color="#6e411b" />
+      <stop offset="100%" stop-color="#522f12" />
+    </linearGradient>
+  </defs>
+
+  <rect width="1000" height="1000" fill="url(#desertWater)" />
+
+  <g stroke="rgba(255,255,255,0.12)" stroke-width="1">
+    <line x1="0" y1="0" x2="0" y2="1000" /><line x1="100" y1="0" x2="100" y2="1000" /><line x1="200" y1="0" x2="200" y2="1000" /><line x1="300" y1="0" x2="300" y2="1000" /><line x1="400" y1="0" x2="400" y2="1000" /><line x1="500" y1="0" x2="500" y2="1000" /><line x1="600" y1="0" x2="600" y2="1000" /><line x1="700" y1="0" x2="700" y2="1000" /><line x1="800" y1="0" x2="800" y2="1000" /><line x1="900" y1="0" x2="900" y2="1000" /><line x1="1000" y1="0" x2="1000" y2="1000" />
+    <line x1="0" y1="0" x2="1000" y2="0" /><line x1="0" y1="100" x2="1000" y2="100" /><line x1="0" y1="200" x2="1000" y2="200" /><line x1="0" y1="300" x2="1000" y2="300" /><line x1="0" y1="400" x2="1000" y2="400" /><line x1="0" y1="500" x2="1000" y2="500" /><line x1="0" y1="600" x2="1000" y2="600" /><line x1="0" y1="700" x2="1000" y2="700" /><line x1="0" y1="800" x2="1000" y2="800" /><line x1="0" y1="900" x2="1000" y2="900" /><line x1="0" y1="1000" x2="1000" y2="1000" />
+  </g>
+  <g fill="rgba(255,255,255,0.5)" font-size="14" font-family="sans-serif" font-weight="bold">
+    <text x="45" y="25">A</text><text x="145" y="25">B</text><text x="245" y="25">C</text><text x="345" y="25">D</text><text x="445" y="25">E</text><text x="545" y="25">F</text><text x="645" y="25">G</text><text x="745" y="25">H</text><text x="845" y="25">I</text><text x="945" y="25">J</text>
+    <text x="10" y="55">1</text><text x="10" y="155">2</text><text x="10" y="255">3</text><text x="10" y="355">4</text><text x="10" y="455">5</text><text x="10" y="555">6</text><text x="10" y="655">7</text><text x="10" y="755">8</text><text x="10" y="855">9</text><text x="10" y="955">10</text>
+  </g>
+
+  <path d="M 80,100 L 920,100 L 920,800 Q 700,920 400,850 T 80,750 Z" fill="url(#desertGrad)" stroke="#a66e38" stroke-width="4" />
+
+  <g transform="translate(480,500)">
+    <rect x="-40" y="-40" width="80" height="80" fill="#ef4444" opacity="0.8" rx="8" />
+    <circle r="16" fill="#fbbf24" stroke="#ffffff" stroke-width="2" />
+    <text x="0" y="55" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="bold">Pecado</text>
+  </g>
+
+  <g transform="translate(720,680)">
+    <rect x="-55" y="-45" width="110" height="90" fill="#dc2626" opacity="0.8" rx="8" />
+    <text x="0" y="60" text-anchor="middle" fill="#ffffff" font-size="16" font-weight="bold">Los Leones</text>
+  </g>
+
+  <g transform="translate(250,350)">
+    <rect x="-45" y="-35" width="90" height="70" fill="#f97316" opacity="0.8" rx="8" />
+    <text x="0" y="50" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="bold">El Pozo</text>
+  </g>
+
+  <g transform="translate(560,380)">
+    <rect x="-30" y="-25" width="60" height="50" fill="#eab308" opacity="0.8" rx="8" />
+    <text x="0" y="40" text-anchor="middle" fill="#ffffff" font-size="14" font-weight="bold">Hacienda</text>
+  </g>
+
+  <rect x="20" y="930" width="340" height="50" fill="rgba(0,0,0,0.8)" rx="10" stroke="rgba(255,255,255,0.2)" />
+  <text x="35" y="962" fill="#fbbf24" font-size="22" font-family="sans-serif" font-weight="bold">MIRAMAR <tspan fill="#ffffff" font-size="16">8x8 km Tactical</tspan></text>
+</svg>
