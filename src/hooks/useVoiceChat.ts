@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import Peer, { MediaConnection, DataConnection } from 'peerjs';
 import { useStrategyStore } from '@/store/strategyStore';
 import { DEFAULT_ICE_SERVERS, getRoomIdFromUrl } from '@/services/realtimeService';
+import { supabase } from '@/services/supabaseClient';
 
 export interface PeerUser {
   id: string;
@@ -42,6 +43,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const animFrameRef = useRef<number | null>(null);
 
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
+  const supabaseChannelRef = useRef<any>(null);
   const isIncomingSyncRef = useRef(false);
 
   // Initialize BroadcastChannel for local cross-tab syncing
@@ -62,7 +64,33 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     };
   }, []);
 
-  // Broadcast strategy store changes across WebRTC Data Channels in real time
+  // Initialize Supabase Realtime broadcast channel when connected to room
+  useEffect(() => {
+    if (supabase && inVoiceRoom && activeRoomId) {
+      const channelName = `dynastyx-room:${activeRoomId.toLowerCase()}`;
+      console.log(`[Supabase Realtime] Connecting to channel: ${channelName}`);
+      const channel = supabase.channel(channelName, {
+        config: { broadcast: { self: false } },
+      });
+
+      channel.on('broadcast', { event: 'SYNC_STORE' }, (payload: any) => {
+        if (payload?.payload?.state) {
+          isIncomingSyncRef.current = true;
+          useStrategyStore.setState(payload.payload.state);
+          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+        }
+      }).subscribe();
+
+      supabaseChannelRef.current = channel;
+
+      return () => {
+        supabase?.removeChannel(channel);
+        supabaseChannelRef.current = null;
+      };
+    }
+  }, [inVoiceRoom, activeRoomId]);
+
+  // Broadcast strategy store changes across WebRTC & Supabase Realtime
   const broadcastStoreState = useCallback((stateSnapshot: any) => {
     if (isIncomingSyncRef.current) return;
     const payload = {
@@ -77,14 +105,23 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       },
     };
 
-    // Broadcast across PeerJS Data Connections to remote devices
+    // 1. Broadcast across PeerJS Data Connections to remote devices
     dataConnsRef.current.forEach((conn) => {
       if (conn.open) {
         conn.send(payload);
       }
     });
 
-    // Broadcast across local browser tabs
+    // 2. Broadcast across Supabase Realtime Channel
+    if (supabaseChannelRef.current) {
+      supabaseChannelRef.current.send({
+        type: 'broadcast',
+        event: 'SYNC_STORE',
+        payload: { state: payload.state },
+      });
+    }
+
+    // 3. Broadcast across local browser tabs
     try {
       broadcastChannelRef.current?.postMessage(payload);
     } catch (e) {}
@@ -113,7 +150,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     }
   }, []);
 
-  // Attach & play remote WebRTC audio stream with DOM element & autoplay unlock
+  // Attach & play remote WebRTC audio stream (Single HTML5 Audio element per peer)
   const attachRemoteAudio = (peerId: string, stream: MediaStream) => {
     try {
       let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
@@ -142,7 +179,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         });
       }
     } catch (e) {
-      console.warn('[Voice Playback Notice]', e);
+      console.warn('[Voice Stream Playback Notice]', e);
     }
   };
 
@@ -151,7 +188,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     if (audioEl) audioEl.remove();
   };
 
-  // Setup WebRTC Data Connection for map state sync
+  // Setup PeerJS Data Connection for real-time tactical tool syncing
   const setupDataConnection = (conn: DataConnection) => {
     dataConnsRef.current.set(conn.peer, conn);
 
@@ -184,17 +221,17 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     });
   };
 
-  // Connect to remote peer slot (Lower slot calls higher slot ONLY to prevent double calling)
+  // Connect to remote peer slot (Lower slot calls higher slot ONLY)
   const connectToPeer = (remotePeerId: string, peer: Peer, stream: MediaStream) => {
     if (callsRef.current.has(remotePeerId)) return;
     try {
-      console.log(`[Voice WebRTC] Calling remote slot: ${remotePeerId}`);
+      console.log(`[Voice WebRTC] Calling remote teammate slot: ${remotePeerId}`);
       const call = peer.call(remotePeerId, stream);
       if (call) {
         callsRef.current.set(remotePeerId, call);
 
         call.on('stream', (remoteStream) => {
-          console.log(`[Voice WebRTC] Received audio stream from: ${remotePeerId}`);
+          console.log(`[Voice WebRTC] Connected audio stream with ${remotePeerId}`);
           attachRemoteAudio(remotePeerId, remoteStream);
           const slotNum = parseInt(remotePeerId.split('-slot-')[1] || '1', 10);
           const rosterItem = DYNASTY_ROSTER.find((r) => r.slot === slotNum) || { name: `Player ${slotNum}`, role: 'Teammate' };
@@ -221,7 +258,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   // Attempt to claim deterministic slot in Room (slot-1 to slot-5)
   const tryJoinSlot = (slotIndex: number, targetRoomId: string, stream: MediaStream) => {
     if (slotIndex > 5) {
-      alert(`DynastyX Room ${targetRoomId} is currently full (5/5 players connected).`);
+      alert(`DynastyX Room ${targetRoomId} is full (5/5 teammates currently connected).`);
       return;
     }
 
@@ -240,9 +277,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       setIsConnected(true);
       setInVoiceRoom(true);
       setClaimedSlot(slotIndex);
-      console.log(`[PeerJS Voice] Joined Room ${targetRoomId} as Slot ${slotIndex} (${id})`);
+      console.log(`[PeerJS Voice] Connected to DynastyX Room ${targetRoomId} as Slot ${slotIndex} (${id})`);
 
-      // Lower slots call higher slots ONLY to avoid double calls
+      // Lower slot calls higher slots ONLY (avoids duplicate cross-calling)
       [1, 2, 3, 4, 5].forEach((s) => {
         if (s > slotIndex) {
           const targetPeerId = `dynastyx-${cleanCode}-slot-${s}`;
@@ -271,6 +308,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       callsRef.current.set(call.peer, call);
 
       call.on('stream', (remoteStream) => {
+        console.log(`[PeerJS Voice] Connected audio stream from ${call.peer}`);
         attachRemoteAudio(call.peer, remoteStream);
         const slotNum = parseInt(call.peer.split('-slot-')[1] || '1', 10);
         const rosterItem = DYNASTY_ROSTER.find((r) => r.slot === slotNum) || { name: `Player ${slotNum}`, role: 'Teammate' };
@@ -288,7 +326,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     });
   };
 
-  // Join Voice Room & Request Mic Access Gracefully
+  // Join Voice Room
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
     const targetRoom = (customCode || activeRoomId || '0414').trim();
     try {
@@ -314,7 +352,6 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         track.enabled = true;
       });
 
-      // Audio Level Meter (DO NOT connect to audioCtx.destination to prevent local mic echo!)
       const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
       if (audioCtx.state === 'suspended') {
         audioCtx.resume();
@@ -341,11 +378,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
     } catch (err) {
       console.error('[Voice] Could not access microphone:', err);
-      alert('Microphone access is blocked or unavailable. Please grant microphone permissions in your browser settings to join voice chat.');
+      alert('Microphone access is required for Voice Chat. Please allow mic permissions in your browser.');
     }
   }, [activeRoomId, selectedDeviceId]);
 
-  // Leave Voice Room & Instantly Release Claimed Slot
+  // Leave Voice Room and release slot immediately
   const leaveVoiceRoom = useCallback(() => {
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => track.stop());

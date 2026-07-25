@@ -74,6 +74,14 @@ export function VoiceChatBar() {
     window.history.pushState({}, '', newUrl);
   };
 
+  const handleJoinRoom = (codeToJoin: string) => {
+    const cleanCode = codeToJoin.trim().toUpperCase();
+    setRoomCode(cleanCode);
+    const newUrl = getRoomShareUrl(cleanCode);
+    window.history.pushState({}, '', newUrl);
+    joinVoiceRoom(cleanCode);
+  };
+
   return (
     <div className="relative">
       {/* Voice Chat Floating Bar */}
@@ -83,7 +91,11 @@ export function VoiceChatBar() {
             <input
               type="text"
               value={roomCode}
-              onChange={(e) => setRoomCode(e.target.value.toUpperCase())}
+              onChange={(e) => {
+                const val = e.target.value.toUpperCase();
+                setRoomCode(val);
+                window.history.pushState({}, '', getRoomShareUrl(val));
+              }}
               placeholder="ROOM CODE"
               className="w-24 bg-white/5 border border-white/15 rounded-lg px-2 py-1.5 text-xs font-bold text-neon text-center focus:outline-none uppercase"
             />
@@ -95,11 +107,11 @@ export function VoiceChatBar() {
               {copied ? 'Link Copied!' : 'Share Link'}
             </button>
             <button
-              onClick={() => joinVoiceRoom(roomCode)}
+              onClick={() => handleJoinRoom(roomCode)}
               className="flex items-center gap-1.5 rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-bold text-white shadow-lg transition-all hover:bg-emerald-500 active:scale-95 glow-neon"
             >
               <PhoneCall className="h-3.5 w-3.5" />
-              <span>Join DynastyX ({roomCode})</span>
+              <span>Join Room ({roomCode})</span>
             </button>
           </div>
         ) : (
