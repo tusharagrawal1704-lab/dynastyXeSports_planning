@@ -96,10 +96,10 @@ export function VoiceChatBar() {
         </span>
         <span className={`flex items-center gap-1 ${inVoiceRoom ? 'text-emerald-400' : 'text-yellow-400'}`}>
           <span className={`h-1.5 w-1.5 rounded-full ${inVoiceRoom ? 'bg-emerald-400' : 'bg-yellow-400'}`} />
-          Peer:{inVoiceRoom ? `Slot${claimedSlot}` : 'OFF'}
+          PeerJS:{inVoiceRoom ? 'YES' : 'NO'}
         </span>
         <span className="text-blue-400">Room:{activeRoomId}</span>
-        <span className="text-purple-400">Peers:{peers.length}</span>
+        <span className={`${peers.length > 0 ? 'text-emerald-400' : 'text-purple-400'}`}>Peers:{peers.length}</span>
       </div>
       {/* Voice Chat Floating Bar */}
       <div className="glass flex items-center gap-2 rounded-xl p-1.5 shadow-xl border border-white/10 backdrop-blur-xl">
