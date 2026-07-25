@@ -22,7 +22,7 @@ const DYNASTY_ROSTER = [
 ];
 
 export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
-  const activeRoomId = (roomCode || getRoomIdFromUrl()).toUpperCase();
+  const activeRoomId = (roomCode || getRoomIdFromUrl()).toUpperCase().trim();
 
   const [isConnected, setIsConnected] = useState(false);
   const [inVoiceRoom, setInVoiceRoom] = useState(false);
