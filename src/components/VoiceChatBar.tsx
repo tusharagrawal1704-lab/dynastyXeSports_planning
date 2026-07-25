@@ -27,6 +27,7 @@ export function VoiceChatBar() {
     isMuted,
     isDeafened,
     audioLevel,
+    claimedSlot,
     peers,
     transcript,
     lastCommand,
@@ -152,10 +153,11 @@ export function VoiceChatBar() {
             {/* Leave Room Button */}
             <button
               onClick={leaveVoiceRoom}
-              className="flex h-9 w-9 items-center justify-center rounded-lg bg-red-600/80 text-white hover:bg-red-600 transition-colors active:scale-95"
-              title="Disconnect Voice"
+              className="flex items-center gap-1 rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-bold text-white shadow hover:bg-red-500 transition-all active:scale-95"
+              title="Disconnect Voice & Free Slot"
             >
-              <PhoneOff className="h-4 w-4" />
+              <PhoneOff className="h-3.5 w-3.5" />
+              <span>Leave Room</span>
             </button>
           </>
         )}
@@ -207,7 +209,7 @@ export function VoiceChatBar() {
               }`}>
                 <div className="flex items-center gap-2">
                   <span className={`h-2.5 w-2.5 rounded-full ${audioLevel > 15 ? 'bg-emerald-400 animate-ping' : 'bg-emerald-500'}`} />
-                  <span className="font-semibold text-white">You (Squad Leader)</span>
+                  <span className="font-semibold text-white">You (Player {claimedSlot || 1})</span>
                 </div>
                 {isMuted ? <MicOff className="h-3.5 w-3.5 text-red-400" /> : <Mic className="h-3.5 w-3.5 text-emerald-400" />}
               </div>
@@ -216,12 +218,23 @@ export function VoiceChatBar() {
               {peers.map((peer) => (
                 <div key={peer.id} className="flex items-center justify-between rounded-xl bg-white/5 p-2 text-xs">
                   <div className="flex items-center gap-2">
-                    <span className="h-2.5 w-2.5 rounded-full bg-blue-500" />
+                    <span className="h-2.5 w-2.5 rounded-full bg-blue-500 animate-pulse" />
                     <span className="font-semibold text-white">{peer.name}</span>
                   </div>
                   <Mic className="h-3.5 w-3.5 text-blue-400" />
                 </div>
               ))}
+            </div>
+
+            {/* Big Disconnect / Leave Room Button */}
+            <div className="mt-3 pt-2 border-t border-white/10">
+              <button
+                onClick={leaveVoiceRoom}
+                className="w-full flex items-center justify-center gap-2 rounded-xl bg-red-600/90 hover:bg-red-600 px-3 py-2 text-xs font-bold text-white shadow-lg transition-all active:scale-95"
+              >
+                <PhoneOff className="h-4 w-4" />
+                <span>Disconnect & Clear Room Slot</span>
+              </button>
             </div>
 
             {/* Voice Command Assistant Banner */}
