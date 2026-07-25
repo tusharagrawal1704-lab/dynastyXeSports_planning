@@ -204,22 +204,40 @@ export function VoiceChatBar() {
 
             <div className="space-y-1.5">
               {/* Local User */}
-              <div className={`flex items-center justify-between rounded-xl p-2 text-xs transition-all ${
-                audioLevel > 15 ? 'bg-emerald-500/20 ring-1 ring-emerald-500/50' : 'bg-white/5'
-              }`}>
-                <div className="flex items-center gap-2">
-                  <span className={`h-2.5 w-2.5 rounded-full ${audioLevel > 15 ? 'bg-emerald-400 animate-ping' : 'bg-emerald-500'}`} />
-                  <span className="font-semibold text-white">You (Player {claimedSlot || 1})</span>
-                </div>
-                {isMuted ? <MicOff className="h-3.5 w-3.5 text-red-400" /> : <Mic className="h-3.5 w-3.5 text-emerald-400" />}
-              </div>
+              {(() => {
+                const localInfo = [
+                  { name: 'DXxTushar1704M', role: 'IGL / Leader' },
+                  { name: 'DXxMystic', role: 'Assaulter' },
+                  { name: 'DXxJester', role: 'Assaulter' },
+                  { name: 'DXxVillian', role: 'Assaulter' },
+                  { name: 'DXxDeep', role: 'Assaulter' },
+                ][(claimedSlot || 1) - 1] || { name: 'DXxPlayer', role: 'Teammate' };
+
+                return (
+                  <div className={`flex items-center justify-between rounded-xl p-2 text-xs transition-all ${
+                    audioLevel > 15 ? 'bg-emerald-500/20 ring-1 ring-emerald-500/50' : 'bg-white/5'
+                  }`}>
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2.5 w-2.5 rounded-full ${audioLevel > 15 ? 'bg-emerald-400 animate-ping' : 'bg-emerald-500'}`} />
+                      <div className="flex flex-col">
+                        <span className="font-bold text-white">{localInfo.name} <span className="text-[10px] text-emerald-400">(You)</span></span>
+                        <span className="text-[10px] text-muted-foreground">Slot {claimedSlot || 1} • {localInfo.role}</span>
+                      </div>
+                    </div>
+                    {isMuted ? <MicOff className="h-3.5 w-3.5 text-red-400" /> : <Mic className="h-3.5 w-3.5 text-emerald-400" />}
+                  </div>
+                );
+              })()}
 
               {/* Remote Peers */}
               {peers.map((peer) => (
                 <div key={peer.id} className="flex items-center justify-between rounded-xl bg-white/5 p-2 text-xs">
                   <div className="flex items-center gap-2">
                     <span className="h-2.5 w-2.5 rounded-full bg-blue-500 animate-pulse" />
-                    <span className="font-semibold text-white">{peer.name}</span>
+                    <div className="flex flex-col">
+                      <span className="font-bold text-white">{peer.name}</span>
+                      <span className="text-[10px] text-muted-foreground">Slot {peer.slot || '?'} • {peer.role || 'Teammate'}</span>
+                    </div>
                   </div>
                   <Mic className="h-3.5 w-3.5 text-blue-400" />
                 </div>
