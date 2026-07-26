@@ -55,45 +55,44 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const supabaseChannelRef = useRef<any>(null);
   const isIncomingSyncRef = useRef(false);
+  const streamsAttachedRef = useRef<Set<string>>(new Set());
 
-  // Attach & play remote WebRTC audio stream (NEVER play self stream)
-  const attachRemoteAudio = useCallback((peerId: string, stream: MediaStream) => {
-    if (!peerId || peerId === peerRef.current?.id || peerId === myPeerIdRef.current) return;
-
-    try {
-      let audioEl = document.getElementById(`audio-peer-${peerId}`) as HTMLAudioElement;
-      if (!audioEl) {
-        audioEl = document.createElement('audio');
-        audioEl.id = `audio-peer-${peerId}`;
-        audioEl.autoplay = true;
-        audioEl.setAttribute('playsinline', 'true');
-        audioEl.style.display = 'none';
-        document.body.appendChild(audioEl);
-      }
-      if (audioEl.srcObject !== stream) {
-        audioEl.srcObject = stream;
-      }
-      audioEl.volume = 0.85;
-      audioEl.muted = isDeafened;
-
-      const playPromise = audioEl.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(() => {
-          const unlock = () => {
-            audioEl.play().catch(() => {});
-            document.removeEventListener('click', unlock);
-            document.removeEventListener('touchstart', unlock);
-          };
-          document.addEventListener('click', unlock);
-          document.addEventListener('touchstart', unlock);
-        });
-      }
-    } catch (e) {
-      console.warn('[Voice Stream Playback Notice]', e);
+  // Attach & play remote WebRTC audio stream — ONE audio element per peer, no duplicates
+  const safeAttachAudio = (peerId: string, stream: MediaStream) => {
+    if (!peerId || peerId === myPeerIdRef.current) return;
+    // Prevent duplicate attachment
+    if (streamsAttachedRef.current.has(peerId)) {
+      console.log(`[Audio] Already attached for ${peerId}, skipping`);
+      return;
     }
-  }, [isDeafened]);
+    streamsAttachedRef.current.add(peerId);
+
+    // Remove any existing audio element first
+    const existing = document.getElementById(`audio-peer-${peerId}`);
+    if (existing) existing.remove();
+
+    const audioEl = document.createElement('audio');
+    audioEl.id = `audio-peer-${peerId}`;
+    audioEl.autoplay = true;
+    audioEl.setAttribute('playsinline', 'true');
+    audioEl.style.display = 'none';
+    audioEl.srcObject = stream;
+    audioEl.volume = 0.85;
+    document.body.appendChild(audioEl);
+    audioEl.play().catch(() => {
+      const unlock = () => {
+        audioEl.play().catch(() => {});
+        document.removeEventListener('click', unlock);
+        document.removeEventListener('touchstart', unlock);
+      };
+      document.addEventListener('click', unlock);
+      document.addEventListener('touchstart', unlock);
+    });
+    console.log(`[Audio] ✅ Attached audio for peer: ${peerId}`);
+  };
 
   const removeRemoteAudio = (peerId: string) => {
+    streamsAttachedRef.current.delete(peerId);
     const audioEl = document.getElementById(`audio-peer-${peerId}`);
     if (audioEl) audioEl.remove();
   };
@@ -131,48 +130,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     });
   };
 
-  // Connect to a discovered remote peer
-  const connectToPeer = useCallback((remotePeerId: string, peer: Peer, stream: MediaStream) => {
-    if (!remotePeerId || remotePeerId === peer.id || callsRef.current.has(remotePeerId)) return;
-    try {
-      const activeStream = localStreamRef.current || stream;
-      console.log(`[Voice WebRTC] Calling discovered peer: ${remotePeerId}`);
-      const call = peer.call(remotePeerId, activeStream);
-      if (call) {
-        callsRef.current.set(remotePeerId, call);
-
-        call.on('stream', (remoteStream) => {
-          console.log(`[Voice WebRTC] ✅ Audio stream connected with ${remotePeerId}`);
-          attachRemoteAudio(remotePeerId, remoteStream);
-          setPeers((prev) => [
-            ...prev.filter((p) => p.id !== remotePeerId),
-            { id: remotePeerId, slot: prev.length + 2, name: `Teammate`, role: 'Squad' },
-          ]);
-        });
-
-        call.on('close', () => {
-          removeRemoteAudio(remotePeerId);
-          callsRef.current.delete(remotePeerId);
-          setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
-        });
-
-        call.on('error', (err) => {
-          console.warn(`[Voice WebRTC] Call error with ${remotePeerId}:`, err);
-          callsRef.current.delete(remotePeerId);
-        });
-      }
-
-      // Also open data connection for map sync
-      if (!dataConnsRef.current.has(remotePeerId)) {
-        const conn = peer.connect(remotePeerId);
-        if (conn) {
-          setupDataConnection(conn);
-        }
-      }
-    } catch (e) {
-      console.warn('[connectToPeer error]', e);
-    }
-  }, [attachRemoteAudio]);
+  // connectToPeer removed — all connections handled via tryConnect inside Supabase Presence effect
 
   // Load initial state from Supabase DB on room mount & subscribe to Postgres DB changes
   useEffect(() => {
@@ -254,33 +212,19 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         const call = peer.call(remotePeerId, stream);
         if (call) {
           callsRef.current.set(remotePeerId, call);
+          let streamHandled = false;
           call.on('stream', (remoteStream) => {
+            if (streamHandled) return; // CRITICAL: only handle first stream event
+            streamHandled = true;
             console.log(`[Voice] ✅ Got audio from: ${remotePeerId}`);
-            // Prevent self-audio: check again
-            if (remotePeerId === myPeerIdRef.current) return;
-            
-            let audioEl = document.getElementById(`audio-peer-${remotePeerId}`) as HTMLAudioElement;
-            if (!audioEl) {
-              audioEl = document.createElement('audio');
-              audioEl.id = `audio-peer-${remotePeerId}`;
-              audioEl.autoplay = true;
-              audioEl.setAttribute('playsinline', 'true');
-              audioEl.style.display = 'none';
-              document.body.appendChild(audioEl);
-            }
-            if (audioEl.srcObject !== remoteStream) {
-              audioEl.srcObject = remoteStream;
-            }
-            audioEl.volume = 0.85;
-            audioEl.play().catch(() => {});
-            
+            safeAttachAudio(remotePeerId, remoteStream);
             setPeers((prev) => [
               ...prev.filter((p) => p.id !== remotePeerId),
               { id: remotePeerId, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
             ]);
           });
           call.on('close', () => {
-            document.getElementById(`audio-peer-${remotePeerId}`)?.remove();
+            removeRemoteAudio(remotePeerId);
             callsRef.current.delete(remotePeerId);
             setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
           });
@@ -613,15 +557,21 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       });
 
       peer.on('call', (call) => {
-        if (callsRef.current.has(call.peer)) return;
+        if (callsRef.current.has(call.peer)) {
+          console.log(`[PeerJS] Ignoring duplicate call from: ${call.peer}`);
+          return;
+        }
         console.log(`[PeerJS] ✅ Answering incoming call from: ${call.peer}`);
         const activeStream = localStreamRef.current || stream;
         call.answer(activeStream);
         callsRef.current.set(call.peer, call);
 
+        let streamHandled = false;
         call.on('stream', (remoteStream) => {
+          if (streamHandled) return; // CRITICAL: only handle first stream event
+          streamHandled = true;
           console.log(`[PeerJS] ✅ Got audio stream from: ${call.peer}`);
-          attachRemoteAudio(call.peer, remoteStream);
+          safeAttachAudio(call.peer, remoteStream);
           setPeers((prev) => [
             ...prev.filter((p) => p.id !== call.peer),
             { id: call.peer, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
@@ -639,7 +589,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       console.error('[Voice] Could not access microphone:', err);
       alert('Microphone access is required for Voice Chat. Please allow mic permissions in your browser.');
     }
-  }, [activeRoomId, selectedDeviceId, userName, attachRemoteAudio, connectToPeer]);
+  }, [activeRoomId, selectedDeviceId, userName]);
 
   // Toggle Mute
   const toggleMute = useCallback(() => {
