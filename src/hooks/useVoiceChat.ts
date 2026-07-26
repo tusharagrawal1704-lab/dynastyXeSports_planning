@@ -56,47 +56,66 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const supabaseChannelRef = useRef<any>(null);
   const isIncomingSyncRef = useRef(false);
   const streamsAttachedRef = useRef<Set<string>>(new Set());
+  // Web Audio API nodes for remote audio playback (per peer)
+  const remoteAudioNodesRef = useRef<Map<string, { ctx: AudioContext; source: MediaStreamAudioSourceNode; gain: GainNode }>>(new Map());
 
-  // Attach & play remote WebRTC audio stream — ONE audio element per peer, no duplicates
+  // Play remote audio through Web Audio API (better AEC integration than <audio> elements)
   const safeAttachAudio = (peerId: string, stream: MediaStream) => {
     if (!peerId || peerId === myPeerIdRef.current) return;
-    // Prevent duplicate attachment
     if (streamsAttachedRef.current.has(peerId)) {
       console.log(`[Audio] Already attached for ${peerId}, skipping`);
       return;
     }
     streamsAttachedRef.current.add(peerId);
 
-    // Remove any existing audio element first
-    const existing = document.getElementById(`audio-peer-${peerId}`);
-    if (existing) existing.remove();
+    // Clean up any previous audio for this peer
+    cleanupPeerAudio(peerId);
 
-    const audioEl = document.createElement('audio');
-    audioEl.id = `audio-peer-${peerId}`;
-    audioEl.autoplay = true;
-    audioEl.setAttribute('playsinline', 'true');
-    audioEl.style.display = 'none';
-    audioEl.srcObject = stream;
-    // Lower volume to reduce speaker-to-mic acoustic echo on phones
-    audioEl.volume = 0.65;
-    document.body.appendChild(audioEl);
-    audioEl.play().catch(() => {
-      const unlock = () => {
-        audioEl.play().catch(() => {});
-        document.removeEventListener('click', unlock);
-        document.removeEventListener('touchstart', unlock);
-      };
-      document.addEventListener('click', unlock);
-      document.addEventListener('touchstart', unlock);
-    });
-    const totalAudioEls = document.querySelectorAll('audio[id^="audio-peer-"]').length;
-    console.log(`[Audio] ✅ Attached audio for peer: ${peerId} (total audio elements: ${totalAudioEls})`);
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      if (ctx.state === 'suspended') ctx.resume();
+      const source = ctx.createMediaStreamSource(stream);
+      const gain = ctx.createGain();
+      gain.gain.value = 0.7;
+      source.connect(gain);
+      gain.connect(ctx.destination);
+      remoteAudioNodesRef.current.set(peerId, { ctx, source, gain });
+      console.log(`[Audio] ✅ Web Audio playback attached for: ${peerId}`);
+    } catch (e) {
+      // Fallback to <audio> element if Web Audio fails
+      console.warn('[Audio] Web Audio failed, falling back to <audio> element');
+      const existing = document.getElementById(`audio-peer-${peerId}`);
+      if (existing) existing.remove();
+      const audioEl = document.createElement('audio');
+      audioEl.id = `audio-peer-${peerId}`;
+      audioEl.setAttribute('playsinline', 'true');
+      audioEl.style.display = 'none';
+      audioEl.srcObject = stream;
+      audioEl.volume = 0.7;
+      document.body.appendChild(audioEl);
+      audioEl.play().catch(() => {});
+    }
+  };
+
+  const cleanupPeerAudio = (peerId: string) => {
+    // Clean Web Audio nodes
+    const nodes = remoteAudioNodesRef.current.get(peerId);
+    if (nodes) {
+      try {
+        nodes.source.disconnect();
+        nodes.gain.disconnect();
+        nodes.ctx.close().catch(() => {});
+      } catch (e) {}
+      remoteAudioNodesRef.current.delete(peerId);
+    }
+    // Clean fallback <audio> element
+    const el = document.getElementById(`audio-peer-${peerId}`);
+    if (el) el.remove();
   };
 
   const removeRemoteAudio = (peerId: string) => {
     streamsAttachedRef.current.delete(peerId);
-    const audioEl = document.getElementById(`audio-peer-${peerId}`);
-    if (audioEl) audioEl.remove();
+    cleanupPeerAudio(peerId);
   };
 
   // Setup PeerJS Data Connection for real-time tactical tool syncing
@@ -423,6 +442,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       peerRef.current = null;
     }
 
+    // Clean up ALL remote audio (Web Audio + fallback elements)
+    streamsAttachedRef.current.forEach((peerId) => cleanupPeerAudio(peerId));
+    streamsAttachedRef.current.clear();
     document.querySelectorAll('audio[id^="audio-peer-"]').forEach((el) => el.remove());
 
     setInVoiceRoom(false);
@@ -432,18 +454,14 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     setPeers([]);
   }, []);
 
-  // Automatic Slot Cleanup on Page Refresh / Close Tab / Page Hide
+  // Automatic cleanup on Page Refresh / Close Tab only (NOT pagehide — that fires when switching apps on mobile)
   useEffect(() => {
     const handleUnload = () => {
       leaveVoiceRoom();
     };
     window.addEventListener('beforeunload', handleUnload);
-    window.addEventListener('pagehide', handleUnload);
-    window.addEventListener('unload', handleUnload);
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
-      window.removeEventListener('pagehide', handleUnload);
-      window.removeEventListener('unload', handleUnload);
     };
   }, [leaveVoiceRoom]);
 
@@ -575,8 +593,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         callsRef.current.set(call.peer, call);
 
         let streamHandled = false;
-        call.on('stream', (remoteStream) => {
-          if (streamHandled) return; // CRITICAL: only handle first stream event
+        call.on('stream', async (remoteStream) => {
+          if (streamHandled) return;
           streamHandled = true;
           console.log(`[PeerJS] ✅ Got audio stream from: ${call.peer}`);
           safeAttachAudio(call.peer, remoteStream);
@@ -584,6 +602,36 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
             ...prev.filter((p) => p.id !== call.peer),
             { id: call.peer, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
           ]);
+
+          // Re-acquire mic stream to force AEC re-calibration now that remote audio is playing
+          try {
+            const freshStream = await navigator.mediaDevices.getUserMedia({
+              audio: {
+                echoCancellation: true,
+                noiseSuppression: true,
+                autoGainControl: true,
+              } as any,
+            });
+            const newTrack = freshStream.getAudioTracks()[0];
+            // Replace the track in the PeerJS call's underlying RTCPeerConnection
+            const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+            if (pc) {
+              const sender = pc.getSenders().find((s: RTCRtpSender) => s.track?.kind === 'audio');
+              if (sender) {
+                await sender.replaceTrack(newTrack);
+                // Stop old tracks and update ref
+                localStreamRef.current?.getAudioTracks().forEach((t) => t.stop());
+                localStreamRef.current = freshStream;
+                console.log('[AEC] ✅ Mic re-acquired for echo cancellation re-calibration');
+              } else {
+                freshStream.getTracks().forEach((t) => t.stop());
+              }
+            } else {
+              freshStream.getTracks().forEach((t) => t.stop());
+            }
+          } catch (e) {
+            console.warn('[AEC] Mic re-acquisition failed (non-critical):', e);
+          }
         });
 
         call.on('close', () => {
@@ -614,6 +662,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const toggleDeafen = useCallback(() => {
     setIsDeafened((prev) => {
       const next = !prev;
+      // Mute/unmute Web Audio gain nodes
+      remoteAudioNodesRef.current.forEach((nodes) => {
+        nodes.gain.gain.value = next ? 0 : 0.7;
+      });
+      // Also mute any fallback <audio> elements
       document.querySelectorAll('audio[id^="audio-peer-"]').forEach((el) => {
         (el as HTMLAudioElement).muted = next;
       });
