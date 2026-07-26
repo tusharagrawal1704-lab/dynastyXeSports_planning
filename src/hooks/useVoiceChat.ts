@@ -77,7 +77,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     audioEl.setAttribute('playsinline', 'true');
     audioEl.style.display = 'none';
     audioEl.srcObject = stream;
-    audioEl.volume = 0.85;
+    // Lower volume to reduce speaker-to-mic acoustic echo on phones
+    audioEl.volume = 0.65;
     document.body.appendChild(audioEl);
     audioEl.play().catch(() => {
       const unlock = () => {
@@ -88,7 +89,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       document.addEventListener('click', unlock);
       document.addEventListener('touchstart', unlock);
     });
-    console.log(`[Audio] ✅ Attached audio for peer: ${peerId}`);
+    const totalAudioEls = document.querySelectorAll('audio[id^="audio-peer-"]').length;
+    console.log(`[Audio] ✅ Attached audio for peer: ${peerId} (total audio elements: ${totalAudioEls})`);
   };
 
   const removeRemoteAudio = (peerId: string) => {
@@ -452,16 +454,22 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       const constraints: MediaStreamConstraints = {
         audio: {
           deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-          echoCancellation: { ideal: true },
-          noiseSuppression: { ideal: true },
-          autoGainControl: { ideal: true },
+          // REQUIRED (not ideal) — forces browser to enable hardware echo cancellation
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
           channelCount: 1,
           sampleRate: 48000,
+          // Chrome-specific echo suppression flags
           googEchoCancellation: true,
+          googExperimentalEchoCancellation: true,
           googAutoGainControl: true,
+          googExperimentalAutoGainControl: true,
           googNoiseSuppression: true,
+          googExperimentalNoiseSuppression: true,
           googHighpassFilter: true,
           googTypingNoiseDetection: true,
+          googAudioMirroring: false,
         } as any,
       };
 
