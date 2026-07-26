@@ -75,7 +75,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     audioEl.setAttribute('playsinline', 'true');
     audioEl.style.display = 'none';
     audioEl.srcObject = stream;
-    audioEl.volume = 0.7;
+    audioEl.volume = 0.5;
     document.body.appendChild(audioEl);
     audioEl.play().catch(() => {
       // Mobile browsers need user gesture — retry on tap
@@ -212,8 +212,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         if (call) {
           callsRef.current.set(remotePeerId, call);
           let streamHandled = false;
-          call.on('stream', (remoteStream) => {
-            if (streamHandled) return; // CRITICAL: only handle first stream event
+          call.on('stream', async (remoteStream) => {
+            if (streamHandled) return;
             streamHandled = true;
             console.log(`[Voice] ✅ Got audio from: ${remotePeerId}`);
             safeAttachAudio(remotePeerId, remoteStream);
@@ -221,6 +221,24 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
               ...prev.filter((p) => p.id !== remotePeerId),
               { id: remotePeerId, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
             ]);
+
+            // AEC re-calibration: re-acquire mic now that remote audio is playing
+            try {
+              const freshStream = await navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } as any,
+              });
+              const newTrack = freshStream.getAudioTracks()[0];
+              const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+              if (pc) {
+                const sender = pc.getSenders().find((s: RTCRtpSender) => s.track?.kind === 'audio');
+                if (sender) {
+                  await sender.replaceTrack(newTrack);
+                  localStreamRef.current?.getAudioTracks().forEach((t) => t.stop());
+                  localStreamRef.current = freshStream;
+                  console.log('[AEC] ✅ Caller mic re-acquired for AEC');
+                } else { freshStream.getTracks().forEach((t) => t.stop()); }
+              } else { freshStream.getTracks().forEach((t) => t.stop()); }
+            } catch (e) { console.warn('[AEC] Caller re-acquisition failed:', e); }
           });
           call.on('close', () => {
             removeRemoteAudio(remotePeerId);
