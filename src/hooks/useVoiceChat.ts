@@ -43,10 +43,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
-  const peerRef = useRef<Peer | null>(null);
   const myPeerIdRef = useRef<string>('');
-  const callsRef = useRef<Map<string, MediaConnection>>(new Map());
-  const dataConnsRef = useRef<Map<string, DataConnection>>(new Map());
+  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
+  const dataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
   const localStreamRef = useRef<MediaStream | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
@@ -80,7 +79,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     audioEl.play().catch(() => {
       // Mobile browsers need user gesture — retry on tap
       const unlock = () => {
-        audioEl.play().catch(() => {});
+        audioEl.play().catch(() => { });
         document.removeEventListener('click', unlock);
         document.removeEventListener('touchstart', unlock);
       };
@@ -96,14 +95,14 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     if (el) el.remove();
   };
 
-  // Setup PeerJS Data Connection for real-time tactical tool syncing
-  const setupDataConnection = (conn: DataConnection) => {
-    dataConnsRef.current.set(conn.peer, conn);
+  // Setup raw RTCDataChannel for real-time tactical tool syncing
+  const setupDataChannel = useCallback((dc: RTCDataChannel, targetUserId: string) => {
+    dataChannelsRef.current.set(targetUserId, dc);
 
-    conn.on('open', () => {
-      console.log(`[PeerJS DataSync] Data channel opened with ${conn.peer}`);
+    dc.onopen = () => {
+      console.log(`[Raw DataChannel] Opened with ${targetUserId}`);
       const currentState = useStrategyStore.getState();
-      conn.send({
+      dc.send(JSON.stringify({
         type: 'SYNC_STORE',
         state: {
           markers: currentState.markers,
@@ -113,23 +112,87 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
           flightPaths: currentState.flightPaths,
           vehiclePaths: currentState.vehiclePaths,
         },
+      }));
+    };
+
+    dc.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data?.type === 'SYNC_STORE' && data?.state) {
+          isIncomingSyncRef.current = true;
+          useStrategyStore.setState(data.state);
+          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+        }
+      } catch (e) {}
+    };
+
+    dc.onclose = () => {
+      dataChannelsRef.current.delete(targetUserId);
+    };
+  }, []);
+
+  // WebRTC Peer Connection Factory
+  const createPeerConnection = useCallback((targetUserId: string, isInitiator: boolean) => {
+    if (peerConnectionsRef.current.has(targetUserId)) {
+      return peerConnectionsRef.current.get(targetUserId)!;
+    }
+
+    console.log(`[WebRTC] Creating PeerConnection for ${targetUserId} (Initiator: ${isInitiator})`);
+    const pc = new RTCPeerConnection({ iceServers: DEFAULT_ICE_SERVERS });
+    peerConnectionsRef.current.set(targetUserId, pc);
+
+    // 1. Add Local Audio Track
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        pc.addTrack(track, localStreamRef.current!);
       });
-    });
+    }
 
-    conn.on('data', (data: any) => {
-      if (data?.type === 'SYNC_STORE' && data?.state) {
-        isIncomingSyncRef.current = true;
-        useStrategyStore.setState(data.state);
-        setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
+    // 2. Handle Remote Audio Track
+    pc.ontrack = (event) => {
+      if (event.streams && event.streams[0]) {
+        console.log(`[WebRTC] ✅ Received remote audio stream from ${targetUserId}`);
+        safeAttachAudio(targetUserId, event.streams[0]);
+        setPeers((prev) => {
+          if (prev.find((p) => p.id === targetUserId)) return prev;
+          return [...prev, { id: targetUserId, slot: prev.length + 2, name: 'Teammate', role: 'Squad' }];
+        });
       }
-    });
+    };
 
-    conn.on('close', () => {
-      dataConnsRef.current.delete(conn.peer);
-    });
-  };
+    // 3. Route ICE Candidates
+    pc.onicecandidate = (event) => {
+      if (event.candidate && supabaseChannelRef.current) {
+        supabaseChannelRef.current.send({
+          type: 'broadcast',
+          event: 'ice-candidate',
+          payload: { targetUserId, candidate: event.candidate, from: myPeerIdRef.current },
+        });
+      }
+    };
 
-  // connectToPeer removed — all connections handled via tryConnect inside Supabase Presence effect
+    // 4. Handle Disconnects
+    pc.oniceconnectionstatechange = () => {
+      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
+        removeRemoteAudio(targetUserId);
+        pc.close();
+        peerConnectionsRef.current.delete(targetUserId);
+        setPeers((prev) => prev.filter((p) => p.id !== targetUserId));
+      }
+    };
+
+    // 5. Setup Data Channels for Map Sync
+    if (isInitiator) {
+      const dc = pc.createDataChannel('tactical-sync');
+      setupDataChannel(dc, targetUserId);
+    } else {
+      pc.ondatachannel = (event) => {
+        setupDataChannel(event.channel, targetUserId);
+      };
+    }
+
+    return pc;
+  }, [setupDataChannel]);
 
   // Load initial state from Supabase DB on room mount & subscribe to Postgres DB changes
   useEffect(() => {
@@ -174,104 +237,84 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     }
   }, [activeRoomId]);
 
-  // Supabase Realtime Presence & Broadcast for peer discovery and map sync
-  // IMPORTANT: Only depends on activeRoomId to prevent channel teardown/recreate loops
+  // Supabase Realtime Signaling for WebRTC Mesh & Map Sync
   useEffect(() => {
     if (!supabase || !activeRoomId) return;
 
     const cleanCode = activeRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
     const channelName = `dynastyx-voice:${cleanCode}`;
-    const presenceKey = myPeerIdRef.current || `anon-${Math.random().toString(36).substr(2, 6)}`;
+    
+    // Ensure we only generate an ID once per session to prevent split rooms
+    if (!myPeerIdRef.current) {
+      myPeerIdRef.current = `dx-${cleanCode}-${Math.random().toString(36).substring(2, 8)}`;
+    }
 
-    console.log(`[Supabase Presence] Joining channel: ${channelName}`);
+    console.log(`[Signaling] Joining room: ${channelName} as ${myPeerIdRef.current}`);
 
     const channel = supabase.channel(channelName, {
-      config: {
-        broadcast: { self: false },
-        presence: { key: presenceKey },
-      },
+      config: { broadcast: { self: false } },
     });
 
-    // Helper: only the peer with the SMALLER ID initiates the call (prevents double connections & echo)
-    const shouldInitiateCall = (remotePeerId: string): boolean => {
-      const myId = myPeerIdRef.current;
-      return myId < remotePeerId;
-    };
-
-    const tryConnect = (remotePeerId: string) => {
-      if (!remotePeerId || remotePeerId === myPeerIdRef.current) return;
-      if (callsRef.current.has(remotePeerId)) return;
-      if (!peerRef.current || !localStreamRef.current) return;
+    // 1. New User Joined -> Existing users create SDP Offer
+    channel.on('broadcast', { event: 'user-joined' }, async (payload: any) => {
+      const newPeerId = payload.payload.peerId;
+      if (newPeerId === myPeerIdRef.current) return;
       
-      if (shouldInitiateCall(remotePeerId)) {
-        console.log(`[Presence] I initiate call to: ${remotePeerId}`);
-        const peer = peerRef.current;
-        const stream = localStreamRef.current;
-        
-        const call = peer.call(remotePeerId, stream);
-        if (call) {
-          callsRef.current.set(remotePeerId, call);
-          let streamHandled = false;
-          call.on('stream', async (remoteStream) => {
-            if (streamHandled) return;
-            streamHandled = true;
-            console.log(`[Voice] ✅ Got audio from: ${remotePeerId}`);
-            safeAttachAudio(remotePeerId, remoteStream);
-            setPeers((prev) => [
-              ...prev.filter((p) => p.id !== remotePeerId),
-              { id: remotePeerId, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
-            ]);
+      console.log(`[Signaling] New user joined: ${newPeerId}. Initiating call...`);
+      const pc = createPeerConnection(newPeerId, true);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      
+      channel.send({
+        type: 'broadcast',
+        event: 'sdp-offer',
+        payload: { targetUserId: newPeerId, sdp: offer, from: myPeerIdRef.current },
+      });
+    });
 
-            // AEC re-calibration: re-acquire mic now that remote audio is playing
-            try {
-              const freshStream = await navigator.mediaDevices.getUserMedia({
-                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } as any,
-              });
-              const newTrack = freshStream.getAudioTracks()[0];
-              const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
-              if (pc) {
-                const sender = pc.getSenders().find((s: RTCRtpSender) => s.track?.kind === 'audio');
-                if (sender) {
-                  await sender.replaceTrack(newTrack);
-                  localStreamRef.current?.getAudioTracks().forEach((t) => t.stop());
-                  localStreamRef.current = freshStream;
-                  console.log('[AEC] ✅ Caller mic re-acquired for AEC');
-                } else { freshStream.getTracks().forEach((t) => t.stop()); }
-              } else { freshStream.getTracks().forEach((t) => t.stop()); }
-            } catch (e) { console.warn('[AEC] Caller re-acquisition failed:', e); }
-          });
-          call.on('close', () => {
-            removeRemoteAudio(remotePeerId);
-            callsRef.current.delete(remotePeerId);
-            setPeers((prev) => prev.filter((p) => p.id !== remotePeerId));
-          });
-        }
-        
-        // Data connection for map sync
-        if (!dataConnsRef.current.has(remotePeerId)) {
-          const conn = peer.connect(remotePeerId);
-          if (conn) {
-            dataConnsRef.current.set(conn.peer, conn);
-            conn.on('open', () => {
-              const s = useStrategyStore.getState();
-              conn.send({ type: 'SYNC_STORE', state: { markers: s.markers, players: s.players, drawings: s.drawings, safeZones: s.safeZones, flightPaths: s.flightPaths, vehiclePaths: s.vehiclePaths } });
-            });
-            conn.on('data', (data: any) => {
-              if (data?.type === 'SYNC_STORE' && data?.state) {
-                isIncomingSyncRef.current = true;
-                useStrategyStore.setState(data.state);
-                setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
-              }
-            });
-            conn.on('close', () => dataConnsRef.current.delete(conn.peer));
-          }
-        }
-      } else {
-        console.log(`[Presence] Waiting for ${remotePeerId} to call me (they have smaller ID)`);
+    // 2. Receive SDP Offer -> Create Answer
+    channel.on('broadcast', { event: 'sdp-offer' }, async (payload: any) => {
+      const { targetUserId, sdp, from } = payload.payload;
+      if (targetUserId !== myPeerIdRef.current) return; // Ignore if not for me
+
+      console.log(`[Signaling] Received Offer from ${from}`);
+      const pc = createPeerConnection(from, false);
+      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      channel.send({
+        type: 'broadcast',
+        event: 'sdp-answer',
+        payload: { targetUserId: from, sdp: answer, from: myPeerIdRef.current },
+      });
+    });
+
+    // 3. Receive SDP Answer
+    channel.on('broadcast', { event: 'sdp-answer' }, async (payload: any) => {
+      const { targetUserId, sdp, from } = payload.payload;
+      if (targetUserId !== myPeerIdRef.current) return;
+
+      console.log(`[Signaling] Received Answer from ${from}`);
+      const pc = peerConnectionsRef.current.get(from);
+      if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
       }
-    };
+    });
 
-    // Listen for map state broadcasts
+    // 4. Receive ICE Candidate
+    channel.on('broadcast', { event: 'ice-candidate' }, async (payload: any) => {
+      const { targetUserId, candidate, from } = payload.payload;
+      if (targetUserId !== myPeerIdRef.current) return;
+
+      const pc = peerConnectionsRef.current.get(from);
+      if (pc) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      }
+    });
+
+    // Also listen for raw broadcast sync store events as fallback
     channel.on('broadcast', { event: 'SYNC_STORE' }, (payload: any) => {
       if (payload?.payload?.state) {
         isIncomingSyncRef.current = true;
@@ -280,48 +323,14 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       }
     });
 
-    // Discover peers via presence
-    channel.on('presence', { event: 'join' }, ({ key, newPresences }: any) => {
-      console.log(`[Presence] 🟢 Peer JOINED: ${key}`);
-      newPresences.forEach((pres: any) => {
-        if (pres?.peerId) {
-          setTimeout(() => tryConnect(pres.peerId), 1500);
-        }
-      });
-    });
-
-    channel.on('presence', { event: 'sync' }, () => {
-      const state = channel.presenceState();
-      Object.keys(state).forEach((key) => {
-        state[key].forEach((pres: any) => {
-          if (pres?.peerId) {
-            tryConnect(pres.peerId);
-          }
-        });
-      });
-    });
-
-    channel.on('presence', { event: 'leave' }, ({ key, leftPresences }: any) => {
-      console.log(`[Presence] 🔴 Peer LEFT: ${key}`);
-      leftPresences.forEach((pres: any) => {
-        if (pres?.peerId) {
-          document.getElementById(`audio-peer-${pres.peerId}`)?.remove();
-          callsRef.current.get(pres.peerId)?.close();
-          callsRef.current.delete(pres.peerId);
-          dataConnsRef.current.get(pres.peerId)?.close();
-          dataConnsRef.current.delete(pres.peerId);
-          setPeers((prev) => prev.filter((p) => p.id !== pres.peerId));
-        }
-      });
-    });
-
     channel.subscribe(async (status) => {
-      console.log(`[Supabase Presence] Channel status: ${status}`);
       if (status === 'SUBSCRIBED') {
-        await channel.track({
-          peerId: myPeerIdRef.current,
-          name: userName,
-          joinedAt: Date.now(),
+        setIsConnected(true);
+        // Alert existing peers in the room that we have joined
+        channel.send({
+          type: 'broadcast',
+          event: 'user-joined',
+          payload: { peerId: myPeerIdRef.current },
         });
       }
     });
@@ -332,7 +341,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       supabase?.removeChannel(channel);
       supabaseChannelRef.current = null;
     };
-  // ONLY activeRoomId as dependency - everything else via refs to prevent channel recreation
+    // ONLY activeRoomId as dependency - everything else via refs to prevent channel recreation
   }, [activeRoomId]);
 
   // Initialize BroadcastChannel for local cross-tab syncing
@@ -347,7 +356,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
           setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
         }
       };
-    } catch (e) {}
+    } catch (e) { }
     return () => {
       broadcastChannelRef.current?.close();
     };
@@ -371,10 +380,10 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     // 1. Save to Supabase DB
     saveRoomState(activeRoomId, stateSnapshot);
 
-    // 2. Broadcast via PeerJS Data Connections
-    dataConnsRef.current.forEach((conn) => {
-      if (conn.open) {
-        conn.send(payload);
+    // 2. Broadcast via Raw Data Channels
+    dataChannelsRef.current.forEach((dc) => {
+      if (dc.readyState === 'open') {
+        dc.send(JSON.stringify(payload));
       }
     });
 
@@ -390,7 +399,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     // 4. Broadcast to local browser tabs
     try {
       broadcastChannelRef.current?.postMessage(payload);
-    } catch (e) {}
+    } catch (e) { }
   }, [activeRoomId]);
 
   // Subscribe to Zustand store mutations
@@ -410,7 +419,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         if (audioInputs.length > 0 && !selectedDeviceId) {
           setSelectedDeviceId(audioInputs[0].deviceId);
         }
-      }).catch(() => {});
+      }).catch(() => { });
     }
   }, []);
 
@@ -423,20 +432,17 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current.close().catch(() => { });
       audioContextRef.current = null;
     }
 
-    callsRef.current.forEach((call) => call.close());
-    callsRef.current.clear();
+    // Close all raw RTCPeerConnections
+    peerConnectionsRef.current.forEach((pc) => pc.close());
+    peerConnectionsRef.current.clear();
 
-    dataConnsRef.current.forEach((conn) => conn.close());
-    dataConnsRef.current.clear();
-
-    if (peerRef.current) {
-      peerRef.current.destroy();
-      peerRef.current = null;
-    }
+    // Close all raw DataChannels
+    dataChannelsRef.current.forEach((dc) => dc.close());
+    dataChannelsRef.current.clear();
 
     // Clean up ALL remote audio
     streamsAttachedRef.current.clear();
@@ -520,121 +526,10 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         animFrameRef.current = requestAnimationFrame(updateVolume);
       };
       updateVolume();
-
-      // Create PeerJS with RANDOM UNIQUE ID (no more slot collisions)
-      const uniquePeerId = generateUniquePeerId(targetRoom);
-      myPeerIdRef.current = uniquePeerId;
-
-      console.log(`[PeerJS] Creating peer with unique ID: ${uniquePeerId}`);
-
-      const peer = new Peer(uniquePeerId, {
-        config: {
-          iceServers: DEFAULT_ICE_SERVERS,
-        },
-      });
-
-      peerRef.current = peer;
-
-      peer.on('open', (id) => {
-        console.log(`[PeerJS] ✅ Connected to signaling server as: ${id}`);
-        setIsConnected(true);
-        setInVoiceRoom(true);
-        setClaimedSlot(1);
-
-        // Re-track presence now that PeerJS is open
-        if (supabaseChannelRef.current) {
-          supabaseChannelRef.current.track({
-            peerId: id,
-            name: userName,
-            joinedAt: Date.now(),
-          }).then(() => {
-            console.log('[Supabase Presence] ✅ Re-tracked with PeerJS ID:', id);
-          }).catch((err: any) => {
-            console.warn('[Supabase Presence] Track error:', err);
-          });
-        }
-      });
-
-      peer.on('error', (err) => {
-        console.error('[PeerJS] Error:', err.type, err);
-        if (err.type === 'unavailable-id') {
-          // Extremely unlikely with random IDs, but handle it
-          peer.destroy();
-          const newId = generateUniquePeerId(targetRoom);
-          myPeerIdRef.current = newId;
-          const retryPeer = new Peer(newId, { config: { iceServers: DEFAULT_ICE_SERVERS } });
-          peerRef.current = retryPeer;
-          retryPeer.on('open', () => {
-            setIsConnected(true);
-            setInVoiceRoom(true);
-            setClaimedSlot(1);
-          });
-        }
-      });
-
-      peer.on('connection', (conn) => {
-        console.log(`[PeerJS] Incoming data connection from: ${conn.peer}`);
-        setupDataConnection(conn);
-      });
-
-      peer.on('call', (call) => {
-        if (callsRef.current.has(call.peer)) {
-          console.log(`[PeerJS] Ignoring duplicate call from: ${call.peer}`);
-          return;
-        }
-        console.log(`[PeerJS] ✅ Answering incoming call from: ${call.peer}`);
-        const activeStream = localStreamRef.current || stream;
-        call.answer(activeStream);
-        callsRef.current.set(call.peer, call);
-
-        let streamHandled = false;
-        call.on('stream', async (remoteStream) => {
-          if (streamHandled) return;
-          streamHandled = true;
-          console.log(`[PeerJS] ✅ Got audio stream from: ${call.peer}`);
-          safeAttachAudio(call.peer, remoteStream);
-          setPeers((prev) => [
-            ...prev.filter((p) => p.id !== call.peer),
-            { id: call.peer, slot: prev.length + 2, name: 'Teammate', role: 'Squad' },
-          ]);
-
-          // Re-acquire mic stream to force AEC re-calibration now that remote audio is playing
-          try {
-            const freshStream = await navigator.mediaDevices.getUserMedia({
-              audio: {
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true,
-              } as any,
-            });
-            const newTrack = freshStream.getAudioTracks()[0];
-            // Replace the track in the PeerJS call's underlying RTCPeerConnection
-            const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
-            if (pc) {
-              const sender = pc.getSenders().find((s: RTCRtpSender) => s.track?.kind === 'audio');
-              if (sender) {
-                await sender.replaceTrack(newTrack);
-                // Stop old tracks and update ref
-                localStreamRef.current?.getAudioTracks().forEach((t) => t.stop());
-                localStreamRef.current = freshStream;
-                console.log('[AEC] ✅ Mic re-acquired for echo cancellation re-calibration');
-              } else {
-                freshStream.getTracks().forEach((t) => t.stop());
-              }
-            } else {
-              freshStream.getTracks().forEach((t) => t.stop());
-            }
-          } catch (e) {
-            console.warn('[AEC] Mic re-acquisition failed (non-critical):', e);
-          }
-        });
-
-        call.on('close', () => {
-          removeRemoteAudio(call.peer);
-          callsRef.current.delete(call.peer);
-          setPeers((prev) => prev.filter((p) => p.id !== call.peer));
-        });
-      });
+      // We no longer initialize PeerJS. Signaling is handled automatically
+      // by the Supabase channel `useEffect` once `inVoiceRoom` state triggers.
+      setInVoiceRoom(true);
+      setClaimedSlot(1);
 
     } catch (err) {
       console.error('[Voice] Could not access microphone:', err);
