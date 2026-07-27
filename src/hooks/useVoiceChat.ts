@@ -102,28 +102,32 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     dc.onopen = () => {
       console.log(`[Raw DataChannel] Opened with ${targetUserId}`);
       const currentState = useStrategyStore.getState();
-      dc.send(JSON.stringify({
-        type: 'SYNC_STORE',
-        state: {
-          markers: currentState.markers,
-          players: currentState.players,
-          drawings: currentState.drawings,
-          safeZones: currentState.safeZones,
-          flightPaths: currentState.flightPaths,
-          vehiclePaths: currentState.vehiclePaths,
-        },
-      }));
+      if (dc.readyState === 'open') {
+        dc.send(JSON.stringify({
+          type: 'SYNC_STORE',
+          state: {
+            markers: currentState.markers,
+            players: currentState.players,
+            drawings: currentState.drawings,
+            safeZones: currentState.safeZones,
+            flightPaths: currentState.flightPaths,
+            vehiclePaths: currentState.vehiclePaths,
+          },
+        }));
+      }
     };
 
     dc.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data);
+        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
         if (data?.type === 'SYNC_STORE' && data?.state) {
           isIncomingSyncRef.current = true;
           useStrategyStore.setState(data.state);
           setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
         }
-      } catch (e) {}
+      } catch (e) {
+        console.warn('[DataChannel] Failed to parse incoming tactical sync:', e);
+      }
     };
 
     dc.onclose = () => {
@@ -256,39 +260,51 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     });
 
     // 1. New User Joined -> Existing users create SDP Offer
-    channel.on('broadcast', { event: 'user-joined' }, async (payload: any) => {
+    channel.on('broadcast', { event: 'user-joined' }, (payload: any) => {
       const newPeerId = payload.payload.peerId;
       if (newPeerId === myPeerIdRef.current) return;
       
-      console.log(`[Signaling] New user joined: ${newPeerId}. Initiating call...`);
-      const pc = createPeerConnection(newPeerId, true);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
+      console.log(`[Signaling] New user joined: ${newPeerId}. Initiating call in 1s...`);
       
-      channel.send({
-        type: 'broadcast',
-        event: 'sdp-offer',
-        payload: { targetUserId: newPeerId, sdp: offer, from: myPeerIdRef.current },
-      });
+      // CRITICAL FIX: Add delay to allow the new peer's Supabase listeners to fully mount
+      setTimeout(async () => {
+        try {
+          const pc = createPeerConnection(newPeerId, true);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          
+          channel.send({
+            type: 'broadcast',
+            event: 'sdp-offer',
+            payload: { targetUserId: newPeerId, sdp: offer, from: myPeerIdRef.current },
+          });
+        } catch (e) {
+          console.error('[Signaling] Failed to create/send offer:', e);
+        }
+      }, 1000); // 1-second delay buffer
     });
 
     // 2. Receive SDP Offer -> Create Answer
     channel.on('broadcast', { event: 'sdp-offer' }, async (payload: any) => {
       const { targetUserId, sdp, from } = payload.payload;
-      if (targetUserId !== myPeerIdRef.current) return; // Ignore if not for me
+      if (targetUserId !== myPeerIdRef.current) return;
 
       console.log(`[Signaling] Received Offer from ${from}`);
-      const pc = createPeerConnection(from, false);
-      await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-      
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
+      try {
+        const pc = createPeerConnection(from, false);
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
 
-      channel.send({
-        type: 'broadcast',
-        event: 'sdp-answer',
-        payload: { targetUserId: from, sdp: answer, from: myPeerIdRef.current },
-      });
+        channel.send({
+          type: 'broadcast',
+          event: 'sdp-answer',
+          payload: { targetUserId: from, sdp: answer, from: myPeerIdRef.current },
+        });
+      } catch (e) {
+        console.error('[Signaling] Failed to handle offer:', e);
+      }
     });
 
     // 3. Receive SDP Answer
@@ -299,7 +315,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       console.log(`[Signaling] Received Answer from ${from}`);
       const pc = peerConnectionsRef.current.get(from);
       if (pc) {
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        } catch (e) {
+          console.error('[Signaling] Failed to set remote description from answer:', e);
+        }
       }
     });
 
@@ -310,7 +330,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
       const pc = peerConnectionsRef.current.get(from);
       if (pc) {
-        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (e) {
+          console.error('[Signaling] Failed to add ICE candidate:', e);
+        }
       }
     });
 
@@ -338,6 +362,12 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     supabaseChannelRef.current = channel;
 
     return () => {
+      // CRITICAL FIX: Ensure full teardown of raw connections when leaving room
+      peerConnectionsRef.current.forEach(pc => pc.close());
+      peerConnectionsRef.current.clear();
+      dataChannelsRef.current.forEach(dc => dc.close());
+      dataChannelsRef.current.clear();
+      
       supabase?.removeChannel(channel);
       supabaseChannelRef.current = null;
     };
@@ -381,9 +411,14 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     saveRoomState(activeRoomId, stateSnapshot);
 
     // 2. Broadcast via Raw Data Channels
+    const stringifiedPayload = JSON.stringify(payload);
     dataChannelsRef.current.forEach((dc) => {
       if (dc.readyState === 'open') {
-        dc.send(JSON.stringify(payload));
+        try {
+          dc.send(stringifiedPayload);
+        } catch (e) {
+          console.warn('[DataChannel] Failed to send tactical data to peer', e);
+        }
       }
     });
 
