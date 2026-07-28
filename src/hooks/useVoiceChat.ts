@@ -14,7 +14,7 @@ export interface PeerUser {
   isSpeaking?: boolean;
 }
 
-const DAILY_DOMAIN = 'https://dynastyx.daily.co'; // Temporary/placeholder domain
+const DAILY_DOMAIN = 'https://dynastyXesports.daily.co'; // Temporary/placeholder domain
 
 export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
   const activeRoomId = (roomCode || getRoomIdFromUrl()).toUpperCase().trim();
@@ -31,11 +31,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
 
   const callObjectRef = useRef<DailyCall | null>(null);
   const myPeerIdRef = useRef<string>('');
-  
+
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const supabaseChannelRef = useRef<any>(null);
   const isIncomingSyncRef = useRef(false);
-  
+
   // Create audio element wrapper
   const safeAttachAudio = (session_id: string, track: MediaStreamTrack) => {
     if (!session_id || session_id === 'local') return;
@@ -51,7 +51,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     audioEl.srcObject = stream;
     audioEl.volume = 0.8;
     document.body.appendChild(audioEl);
-    
+
     audioEl.play().catch(() => {
       const unlock = () => {
         audioEl.play().catch(() => { });
@@ -109,7 +109,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     if (!supabase || !activeRoomId) return;
     const cleanCode = activeRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
     const channelName = `dynastyx-sync:${cleanCode}`;
-    
+
     console.log(`[Supabase Broadcast] Joining channel: ${channelName}`);
     const channel = supabase.channel(channelName, {
       config: { broadcast: { self: false } },
@@ -229,7 +229,7 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
     const targetRoom = (customCode || activeRoomId || 'DX-0414').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
     const roomUrl = `${DAILY_DOMAIN}/${targetRoom}`;
-    
+
     try {
       const callFrame = DailyIframe.createCallObject({
         audioSource: selectedDeviceId || true,
