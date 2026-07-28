@@ -51,17 +51,8 @@ let cachedSessionRoomId: string | null = null;
  * Extract Room ID from URL or generate a fresh unique session Room ID
  */
 export function getRoomIdFromUrl(): string {
-  if (typeof window === 'undefined') return 'DX-0414';
-  const params = new URLSearchParams(window.location.search);
-  const urlRoomId = params.get('roomId') || params.get('room');
-  if (urlRoomId && urlRoomId.trim()) {
-    cachedSessionRoomId = urlRoomId.trim().toUpperCase();
-    return cachedSessionRoomId;
-  }
-  if (!cachedSessionRoomId) {
-    cachedSessionRoomId = generateRoomId();
-  }
-  return cachedSessionRoomId;
+  // Hardcoded to force the entire site to use a single fixed room as requested
+  return 'DX-0414';
 }
 
 /**

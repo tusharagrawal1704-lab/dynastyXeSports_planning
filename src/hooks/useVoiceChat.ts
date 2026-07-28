@@ -17,7 +17,8 @@ export interface PeerUser {
 const DAILY_DOMAIN = 'https://dynastyxesports.daily.co'; // Temporary/placeholder domain
 
 export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
-  const activeRoomId = (roomCode || getRoomIdFromUrl()).toUpperCase().trim();
+  // Hardcoded to force the entire site to use a single fixed room as requested
+  const activeRoomId = 'DX-0414';
 
   const [isConnected, setIsConnected] = useState(false);
   const [inVoiceRoom, setInVoiceRoom] = useState(false);
