@@ -203,7 +203,7 @@ export function MapCanvas({ mapSrc, onExportRef }: MapCanvasProps) {
     }
 
     // Special tools
-    if (toolMode === 'special') {
+    if (toolMode === 'special' && isLeft) {
       if (activeSpecialTool === 'flight') {
         if (!flightStart) {
           setFlightStart(mapPos);
@@ -265,7 +265,15 @@ export function MapCanvas({ mapSrc, onExportRef }: MapCanvasProps) {
     if (!mapPos) return;
 
     if (activeTool === 'freedraw') {
-      setDrawingPoints((p) => [...p, mapPos.x, mapPos.y]);
+      setDrawingPoints((p) => {
+        const lastX = p[p.length - 2];
+        const lastY = p[p.length - 1];
+        // Throttle distance to reduce points (e.g., must move at least 2 pixels)
+        if (lastX !== undefined && Math.abs(mapPos.x - lastX) < 2 && Math.abs(mapPos.y - lastY) < 2) {
+          return p;
+        }
+        return [...p, Math.round(mapPos.x * 10) / 10, Math.round(mapPos.y * 10) / 10];
+      });
     } else if (activeTool !== 'polygon') {
       setDrawingPoints((p) => { const arr = [...p]; arr[2] = mapPos.x; arr[3] = mapPos.y; return arr; });
     }

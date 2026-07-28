@@ -10,7 +10,8 @@ export type MarkerType =
   | 'smoke'
   | 'grenade'
   | 'scout'
-  | 'airdrop';
+  | 'airdrop'
+  | 'drop';
 
 export interface MarkerDefinition {
   type: MarkerType;
@@ -44,6 +45,7 @@ export const MARKER_DEFINITIONS: MarkerDefinition[] = [
   { type: 'grenade', label: 'Grenade', color: '#eab308', icon: 'grenade' },
   { type: 'scout', label: 'Scout', color: '#06b6d4', icon: 'eye' },
   { type: 'airdrop', label: 'Air Drop', color: '#facc15', icon: 'plane' },
+  { type: 'drop', label: 'Drop Location', color: '#ec4899', icon: 'map-pin' },
 ];
 
 export function getMarkerDefinition(type: MarkerType): MarkerDefinition {

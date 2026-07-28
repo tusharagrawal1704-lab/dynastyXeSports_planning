@@ -21,6 +21,7 @@ const ICON_MAP: Record<string, typeof Swords> = {
   grenade: Bomb,
   eye: Eye,
   plane: Plane,
+  'map-pin': MapPin,
 };
 
 export function MarkerToolbar() {

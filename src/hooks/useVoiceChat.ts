@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import Peer, { MediaConnection, DataConnection } from 'peerjs';
+import DailyIframe, { DailyCall } from '@daily-co/daily-js';
 import { useStrategyStore } from '@/store/strategyStore';
-import { DEFAULT_ICE_SERVERS, getRoomIdFromUrl } from '@/services/realtimeService';
+import { getRoomIdFromUrl } from '@/services/realtimeService';
 import { supabase } from '@/services/supabaseClient';
 import { fetchRoomState, saveRoomState } from '@/services/supabaseService';
 
@@ -14,21 +14,7 @@ export interface PeerUser {
   isSpeaking?: boolean;
 }
 
-const DYNASTY_ROSTER = [
-  { slot: 1, name: 'DXxTushar1704M', role: 'IGL / Leader' },
-  { slot: 2, name: 'DXxMystic', role: 'Assaulter' },
-  { slot: 3, name: 'DXxJester', role: 'Assaulter' },
-  { slot: 4, name: 'DXxVillian', role: 'Assaulter' },
-  { slot: 5, name: 'DXxDeep', role: 'Assaulter' },
-];
-
-// Generate a unique random peer ID per browser session
-function generateUniquePeerId(roomId: string): string {
-  const rand = Math.random().toString(36).substring(2, 8);
-  const ts = Date.now().toString(36).substring(-4);
-  const clean = roomId.toLowerCase().replace(/[^a-z0-9]/g, '');
-  return `dx-${clean}-${rand}${ts}`;
-}
+const DAILY_DOMAIN = 'https://dynastyx.daily.co'; // Temporary/placeholder domain
 
 export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
   const activeRoomId = (roomCode || getRoomIdFromUrl()).toUpperCase().trim();
@@ -43,41 +29,30 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [selectedDeviceId, setSelectedDeviceId] = useState<string>('');
 
+  const callObjectRef = useRef<DailyCall | null>(null);
   const myPeerIdRef = useRef<string>('');
-  const peerConnectionsRef = useRef<Map<string, RTCPeerConnection>>(new Map());
-  const dataChannelsRef = useRef<Map<string, RTCDataChannel>>(new Map());
-  const localStreamRef = useRef<MediaStream | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const analyserRef = useRef<AnalyserNode | null>(null);
-  const animFrameRef = useRef<number | null>(null);
-
+  
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
   const supabaseChannelRef = useRef<any>(null);
   const isIncomingSyncRef = useRef(false);
-  const streamsAttachedRef = useRef<Set<string>>(new Set());
-
-  // Play remote audio via <audio> element — one per peer, strictly deduplicated
-  const safeAttachAudio = (peerId: string, stream: MediaStream) => {
-    if (!peerId || peerId === myPeerIdRef.current) return;
-    if (streamsAttachedRef.current.has(peerId)) {
-      console.log(`[Audio] Already attached for ${peerId}, skipping`);
-      return;
-    }
-    streamsAttachedRef.current.add(peerId);
-
-    // Remove any existing element for this peer
-    const existing = document.getElementById(`audio-peer-${peerId}`);
+  
+  // Create audio element wrapper
+  const safeAttachAudio = (session_id: string, track: MediaStreamTrack) => {
+    if (!session_id || session_id === 'local') return;
+    const existing = document.getElementById(`audio-peer-${session_id}`);
     if (existing) existing.remove();
 
     const audioEl = document.createElement('audio');
-    audioEl.id = `audio-peer-${peerId}`;
+    audioEl.id = `audio-peer-${session_id}`;
     audioEl.setAttribute('playsinline', 'true');
+    audioEl.setAttribute('autoplay', 'true');
     audioEl.style.display = 'none';
+    const stream = new MediaStream([track]);
     audioEl.srcObject = stream;
-    audioEl.volume = 0.5;
+    audioEl.volume = 0.8;
     document.body.appendChild(audioEl);
+    
     audioEl.play().catch(() => {
-      // Mobile browsers need user gesture — retry on tap
       const unlock = () => {
         audioEl.play().catch(() => { });
         document.removeEventListener('click', unlock);
@@ -86,123 +61,18 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       document.addEventListener('click', unlock);
       document.addEventListener('touchstart', unlock);
     });
-    console.log(`[Audio] ✅ Attached for: ${peerId}`);
+    console.log(`[Audio] ✅ Attached for: ${session_id}`);
   };
 
-  const removeRemoteAudio = (peerId: string) => {
-    streamsAttachedRef.current.delete(peerId);
-    const el = document.getElementById(`audio-peer-${peerId}`);
+  const removeRemoteAudio = (session_id: string) => {
+    const el = document.getElementById(`audio-peer-${session_id}`);
     if (el) el.remove();
   };
-
-  // Setup raw RTCDataChannel for real-time tactical tool syncing
-  const setupDataChannel = useCallback((dc: RTCDataChannel, targetUserId: string) => {
-    dataChannelsRef.current.set(targetUserId, dc);
-
-    dc.onopen = () => {
-      console.log(`[Raw DataChannel] Opened with ${targetUserId}`);
-      const currentState = useStrategyStore.getState();
-      if (dc.readyState === 'open') {
-        dc.send(JSON.stringify({
-          type: 'SYNC_STORE',
-          state: {
-            markers: currentState.markers,
-            players: currentState.players,
-            drawings: currentState.drawings,
-            safeZones: currentState.safeZones,
-            flightPaths: currentState.flightPaths,
-            vehiclePaths: currentState.vehiclePaths,
-          },
-        }));
-      }
-    };
-
-    dc.onmessage = (event) => {
-      try {
-        const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
-        if (data?.type === 'SYNC_STORE' && data?.state) {
-          isIncomingSyncRef.current = true;
-          useStrategyStore.setState(data.state);
-          setTimeout(() => { isIncomingSyncRef.current = false; }, 50);
-        }
-      } catch (e) {
-        console.warn('[DataChannel] Failed to parse incoming tactical sync:', e);
-      }
-    };
-
-    dc.onclose = () => {
-      dataChannelsRef.current.delete(targetUserId);
-    };
-  }, []);
-
-  // WebRTC Peer Connection Factory
-  const createPeerConnection = useCallback((targetUserId: string, isInitiator: boolean) => {
-    if (peerConnectionsRef.current.has(targetUserId)) {
-      return peerConnectionsRef.current.get(targetUserId)!;
-    }
-
-    console.log(`[WebRTC] Creating PeerConnection for ${targetUserId} (Initiator: ${isInitiator})`);
-    const pc = new RTCPeerConnection({ iceServers: DEFAULT_ICE_SERVERS });
-    peerConnectionsRef.current.set(targetUserId, pc);
-
-    // 1. Add Local Audio Track
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current!);
-      });
-    }
-
-    // 2. Handle Remote Audio Track
-    pc.ontrack = (event) => {
-      if (event.streams && event.streams[0]) {
-        console.log(`[WebRTC] ✅ Received remote audio stream from ${targetUserId}`);
-        safeAttachAudio(targetUserId, event.streams[0]);
-        setPeers((prev) => {
-          if (prev.find((p) => p.id === targetUserId)) return prev;
-          return [...prev, { id: targetUserId, slot: prev.length + 2, name: 'Teammate', role: 'Squad' }];
-        });
-      }
-    };
-
-    // 3. Route ICE Candidates
-    pc.onicecandidate = (event) => {
-      if (event.candidate && supabaseChannelRef.current) {
-        supabaseChannelRef.current.send({
-          type: 'broadcast',
-          event: 'ice-candidate',
-          payload: { targetUserId, candidate: event.candidate, from: myPeerIdRef.current },
-        });
-      }
-    };
-
-    // 4. Handle Disconnects
-    pc.oniceconnectionstatechange = () => {
-      if (pc.iceConnectionState === 'disconnected' || pc.iceConnectionState === 'failed') {
-        removeRemoteAudio(targetUserId);
-        pc.close();
-        peerConnectionsRef.current.delete(targetUserId);
-        setPeers((prev) => prev.filter((p) => p.id !== targetUserId));
-      }
-    };
-
-    // 5. Setup Data Channels for Map Sync
-    if (isInitiator) {
-      const dc = pc.createDataChannel('tactical-sync');
-      setupDataChannel(dc, targetUserId);
-    } else {
-      pc.ondatachannel = (event) => {
-        setupDataChannel(event.channel, targetUserId);
-      };
-    }
-
-    return pc;
-  }, [setupDataChannel]);
 
   // Load initial state from Supabase DB on room mount & subscribe to Postgres DB changes
   useEffect(() => {
     if (!activeRoomId) return;
 
-    // 1. Initial DB Fetch
     fetchRoomState(activeRoomId).then((dbState) => {
       if (dbState) {
         console.log('[Supabase DB] ✅ Loaded room state from database');
@@ -212,18 +82,12 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       }
     });
 
-    // 2. Realtime Postgres Changes Subscription
     if (supabase) {
       const dbChannel = supabase
         .channel(`db-rooms-${activeRoomId}`)
         .on(
           'postgres_changes',
-          {
-            event: '*',
-            schema: 'public',
-            table: 'rooms',
-            filter: `id=eq.${activeRoomId}`,
-          },
+          { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${activeRoomId}` },
           (payload: any) => {
             if (payload?.new?.state) {
               console.log('[Supabase DB] ✅ Received realtime DB update');
@@ -234,111 +98,23 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
           }
         )
         .subscribe();
-
       return () => {
         supabase?.removeChannel(dbChannel);
       };
     }
   }, [activeRoomId]);
 
-  // Supabase Realtime Signaling for WebRTC Mesh & Map Sync
+  // Supabase Realtime Broadcast for Map Sync
   useEffect(() => {
     if (!supabase || !activeRoomId) return;
-
     const cleanCode = activeRoomId.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const channelName = `dynastyx-voice:${cleanCode}`;
+    const channelName = `dynastyx-sync:${cleanCode}`;
     
-    // Ensure we only generate an ID once per session to prevent split rooms
-    if (!myPeerIdRef.current) {
-      myPeerIdRef.current = `dx-${cleanCode}-${Math.random().toString(36).substring(2, 8)}`;
-    }
-
-    console.log(`[Signaling] Joining room: ${channelName} as ${myPeerIdRef.current}`);
-
+    console.log(`[Supabase Broadcast] Joining channel: ${channelName}`);
     const channel = supabase.channel(channelName, {
       config: { broadcast: { self: false } },
     });
 
-    // 1. New User Joined -> Existing users create SDP Offer
-    channel.on('broadcast', { event: 'user-joined' }, (payload: any) => {
-      const newPeerId = payload.payload.peerId;
-      if (newPeerId === myPeerIdRef.current) return;
-      
-      console.log(`[Signaling] New user joined: ${newPeerId}. Initiating call in 1s...`);
-      
-      // CRITICAL FIX: Add delay to allow the new peer's Supabase listeners to fully mount
-      setTimeout(async () => {
-        try {
-          const pc = createPeerConnection(newPeerId, true);
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          
-          channel.send({
-            type: 'broadcast',
-            event: 'sdp-offer',
-            payload: { targetUserId: newPeerId, sdp: offer, from: myPeerIdRef.current },
-          });
-        } catch (e) {
-          console.error('[Signaling] Failed to create/send offer:', e);
-        }
-      }, 1000); // 1-second delay buffer
-    });
-
-    // 2. Receive SDP Offer -> Create Answer
-    channel.on('broadcast', { event: 'sdp-offer' }, async (payload: any) => {
-      const { targetUserId, sdp, from } = payload.payload;
-      if (targetUserId !== myPeerIdRef.current) return;
-
-      console.log(`[Signaling] Received Offer from ${from}`);
-      try {
-        const pc = createPeerConnection(from, false);
-        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        
-        const answer = await pc.createAnswer();
-        await pc.setLocalDescription(answer);
-
-        channel.send({
-          type: 'broadcast',
-          event: 'sdp-answer',
-          payload: { targetUserId: from, sdp: answer, from: myPeerIdRef.current },
-        });
-      } catch (e) {
-        console.error('[Signaling] Failed to handle offer:', e);
-      }
-    });
-
-    // 3. Receive SDP Answer
-    channel.on('broadcast', { event: 'sdp-answer' }, async (payload: any) => {
-      const { targetUserId, sdp, from } = payload.payload;
-      if (targetUserId !== myPeerIdRef.current) return;
-
-      console.log(`[Signaling] Received Answer from ${from}`);
-      const pc = peerConnectionsRef.current.get(from);
-      if (pc) {
-        try {
-          await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-        } catch (e) {
-          console.error('[Signaling] Failed to set remote description from answer:', e);
-        }
-      }
-    });
-
-    // 4. Receive ICE Candidate
-    channel.on('broadcast', { event: 'ice-candidate' }, async (payload: any) => {
-      const { targetUserId, candidate, from } = payload.payload;
-      if (targetUserId !== myPeerIdRef.current) return;
-
-      const pc = peerConnectionsRef.current.get(from);
-      if (pc) {
-        try {
-          await pc.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.error('[Signaling] Failed to add ICE candidate:', e);
-        }
-      }
-    });
-
-    // Also listen for raw broadcast sync store events as fallback
     channel.on('broadcast', { event: 'SYNC_STORE' }, (payload: any) => {
       if (payload?.payload?.state) {
         isIncomingSyncRef.current = true;
@@ -347,31 +123,18 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       }
     });
 
-    channel.subscribe(async (status) => {
+    channel.subscribe((status) => {
       if (status === 'SUBSCRIBED') {
         setIsConnected(true);
-        // Alert existing peers in the room that we have joined
-        channel.send({
-          type: 'broadcast',
-          event: 'user-joined',
-          payload: { peerId: myPeerIdRef.current },
-        });
       }
     });
 
     supabaseChannelRef.current = channel;
 
     return () => {
-      // CRITICAL FIX: Ensure full teardown of raw connections when leaving room
-      peerConnectionsRef.current.forEach(pc => pc.close());
-      peerConnectionsRef.current.clear();
-      dataChannelsRef.current.forEach(dc => dc.close());
-      dataChannelsRef.current.clear();
-      
       supabase?.removeChannel(channel);
       supabaseChannelRef.current = null;
     };
-    // ONLY activeRoomId as dependency - everything else via refs to prevent channel recreation
   }, [activeRoomId]);
 
   // Initialize BroadcastChannel for local cross-tab syncing
@@ -407,22 +170,9 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       },
     };
 
-    // 1. Save to Supabase DB
     saveRoomState(activeRoomId, stateSnapshot);
 
-    // 2. Broadcast via Raw Data Channels
-    const stringifiedPayload = JSON.stringify(payload);
-    dataChannelsRef.current.forEach((dc) => {
-      if (dc.readyState === 'open') {
-        try {
-          dc.send(stringifiedPayload);
-        } catch (e) {
-          console.warn('[DataChannel] Failed to send tactical data to peer', e);
-        }
-      }
-    });
-
-    // 3. Broadcast via Supabase Realtime
+    // Broadcast via Supabase Realtime
     if (supabaseChannelRef.current) {
       supabaseChannelRef.current.send({
         type: 'broadcast',
@@ -431,13 +181,11 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
       });
     }
 
-    // 4. Broadcast to local browser tabs
     try {
       broadcastChannelRef.current?.postMessage(payload);
     } catch (e) { }
   }, [activeRoomId]);
 
-  // Subscribe to Zustand store mutations
   useEffect(() => {
     const unsub = useStrategyStore.subscribe((state) => {
       broadcastStoreState(state);
@@ -445,7 +193,6 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
     return () => unsub();
   }, [broadcastStoreState]);
 
-  // Enumerate input audio devices
   useEffect(() => {
     if (navigator.mediaDevices?.enumerateDevices) {
       navigator.mediaDevices.enumerateDevices().then((devices) => {
@@ -456,134 +203,94 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         }
       }).catch(() => { });
     }
-  }, []);
+  }, [selectedDeviceId]);
 
-  // Leave Voice Room and release slot immediately
   const leaveVoiceRoom = useCallback(() => {
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((track) => track.stop());
-      localStreamRef.current = null;
+    if (callObjectRef.current) {
+      callObjectRef.current.leave();
+      callObjectRef.current.destroy();
+      callObjectRef.current = null;
     }
 
-    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-    if (audioContextRef.current) {
-      audioContextRef.current.close().catch(() => { });
-      audioContextRef.current = null;
-    }
-
-    // Close all raw RTCPeerConnections
-    peerConnectionsRef.current.forEach((pc) => pc.close());
-    peerConnectionsRef.current.clear();
-
-    // Close all raw DataChannels
-    dataChannelsRef.current.forEach((dc) => dc.close());
-    dataChannelsRef.current.clear();
-
-    // Clean up ALL remote audio
-    streamsAttachedRef.current.clear();
     document.querySelectorAll('audio[id^="audio-peer-"]').forEach((el) => el.remove());
 
     setInVoiceRoom(false);
-    setIsConnected(false);
     setAudioLevel(0);
     setClaimedSlot(null);
     setPeers([]);
   }, []);
 
-  // Automatic cleanup on Page Refresh / Close Tab only (NOT pagehide — that fires when switching apps on mobile)
   useEffect(() => {
-    const handleUnload = () => {
-      leaveVoiceRoom();
-    };
+    const handleUnload = () => { leaveVoiceRoom(); };
     window.addEventListener('beforeunload', handleUnload);
-    return () => {
-      window.removeEventListener('beforeunload', handleUnload);
-    };
+    return () => window.removeEventListener('beforeunload', handleUnload);
   }, [leaveVoiceRoom]);
 
-  // Join Voice Room with random unique PeerJS ID
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
-    const targetRoom = (customCode || activeRoomId || 'DX-0414').trim();
+    const targetRoom = (customCode || activeRoomId || 'DX-0414').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    const roomUrl = `${DAILY_DOMAIN}/${targetRoom}`;
+    
     try {
-      const constraints: MediaStreamConstraints = {
-        audio: {
-          deviceId: selectedDeviceId ? { exact: selectedDeviceId } : undefined,
-          // REQUIRED (not ideal) — forces browser to enable hardware echo cancellation
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-          channelCount: 1,
-          sampleRate: 48000,
-          // Chrome-specific echo suppression flags
-          googEchoCancellation: true,
-          googExperimentalEchoCancellation: true,
-          googAutoGainControl: true,
-          googExperimentalAutoGainControl: true,
-          googNoiseSuppression: true,
-          googExperimentalNoiseSuppression: true,
-          googHighpassFilter: true,
-          googTypingNoiseDetection: true,
-          googAudioMirroring: false,
-        } as any,
-      };
+      const callFrame = DailyIframe.createCallObject({
+        audioSource: selectedDeviceId || true,
+        videoSource: false,
+      });
+      callObjectRef.current = callFrame;
 
-      let stream: MediaStream;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (e) {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
-      localStreamRef.current = stream;
-
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = true;
+      callFrame.on('joined-meeting', (e: any) => {
+        console.log('[Daily.co] ✅ Joined meeting', e);
+        setInVoiceRoom(true);
+        setClaimedSlot(1);
+        myPeerIdRef.current = e.participants.local.session_id;
       });
 
-      // Audio level meter
-      const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (audioCtx.state === 'suspended') {
-        audioCtx.resume();
-      }
-      const analyser = audioCtx.createAnalyser();
-      const source = audioCtx.createMediaStreamSource(stream);
-      source.connect(analyser);
-      analyser.fftSize = 64;
-      audioContextRef.current = audioCtx;
-      analyserRef.current = analyser;
+      callFrame.on('participant-joined', (e: any) => {
+        console.log('[Daily.co] Participant joined', e.participant.session_id);
+        setPeers((prev) => {
+          if (prev.find((p) => p.id === e.participant.session_id)) return prev;
+          return [...prev, { id: e.participant.session_id, slot: prev.length + 2, name: 'Teammate', role: 'Squad' }];
+        });
+      });
 
-      const dataArray = new Uint8Array(analyser.frequencyBinCount);
-      const updateVolume = () => {
-        analyser.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-        const avg = sum / dataArray.length;
-        setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
-        animFrameRef.current = requestAnimationFrame(updateVolume);
-      };
-      updateVolume();
-      // We no longer initialize PeerJS. Signaling is handled automatically
-      // by the Supabase channel `useEffect` once `inVoiceRoom` state triggers.
-      setInVoiceRoom(true);
-      setClaimedSlot(1);
+      callFrame.on('participant-left', (e: any) => {
+        console.log('[Daily.co] Participant left', e.participant.session_id);
+        removeRemoteAudio(e.participant.session_id);
+        setPeers((prev) => prev.filter((p) => p.id !== e.participant.session_id));
+      });
+
+      callFrame.on('track-started', (e: any) => {
+        if (e.track.kind === 'audio' && e.participant && e.participant.session_id !== 'local') {
+          safeAttachAudio(e.participant.session_id, e.track);
+        }
+      });
+
+      callFrame.on('track-stopped', (e: any) => {
+        if (e.track.kind === 'audio' && e.participant && e.participant.session_id !== 'local') {
+          removeRemoteAudio(e.participant.session_id);
+        }
+      });
+
+      callFrame.on('error', (e: any) => {
+        console.error('[Daily.co] Error:', e);
+        alert('Daily.co Voice Chat failed to connect. Ensure room exists.');
+      });
+
+      await callFrame.join({ url: roomUrl, userName });
 
     } catch (err) {
-      console.error('[Voice] Could not access microphone:', err);
-      alert('Microphone access is required for Voice Chat. Please allow mic permissions in your browser.');
+      console.error('[Voice] Could not access microphone or connect Daily:', err);
+      alert('Microphone access is required for Voice Chat. Please allow mic permissions.');
     }
   }, [activeRoomId, selectedDeviceId, userName]);
 
-  // Toggle Mute
   const toggleMute = useCallback(() => {
-    if (localStreamRef.current) {
-      const audioTrack = localStreamRef.current.getAudioTracks()[0];
-      if (audioTrack) {
-        audioTrack.enabled = !audioTrack.enabled;
-        setIsMuted(!audioTrack.enabled);
-      }
+    if (callObjectRef.current) {
+      const localAudio = callObjectRef.current.localAudio();
+      callObjectRef.current.setLocalAudio(!localAudio);
+      setIsMuted(localAudio); // If it was on, we are turning it off (muted=true)
     }
   }, []);
 
-  // Toggle Deafen
   const toggleDeafen = useCallback(() => {
     setIsDeafened((prev) => {
       const next = !prev;
