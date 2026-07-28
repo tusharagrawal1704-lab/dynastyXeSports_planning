@@ -198,11 +198,6 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   }, [leaveVoiceRoom]);
 
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
-    if (AGORA_APP_ID === 'YOUR_AGORA_APP_ID_HERE') {
-      alert('Please add your Agora App ID to the code before joining!');
-      return;
-    }
-    
     // Ignore any custom code passed in; lock strictly to activeRoomId
     const targetRoom = activeRoomId.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
 
