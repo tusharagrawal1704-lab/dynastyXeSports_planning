@@ -228,7 +228,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
   }, [leaveVoiceRoom]);
 
   const joinVoiceRoom = useCallback(async (customCode?: string) => {
-    const targetRoom = (customCode || activeRoomId || 'DX-0414').trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
+    // Ignore any custom code passed in; lock strictly to activeRoomId
+    const targetRoom = activeRoomId.trim().toLowerCase().replace(/[^a-z0-9-]/g, '');
     const roomUrl = `${DAILY_DOMAIN}/${targetRoom}`;
 
     try {
