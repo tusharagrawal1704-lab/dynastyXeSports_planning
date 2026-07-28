@@ -13,8 +13,8 @@ export interface PeerUser {
   isSpeaking?: boolean;
 }
 
-// TODO: Replace this with your Agora App ID (from the Testing Mode project)
-const AGORA_APP_ID = 'YOUR_AGORA_APP_ID_HERE';
+// Provided by user
+const AGORA_APP_ID = 'e3c44f662b8943b7bf5a3052b3810b61';
 
 export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
   // Hardcoded to force the entire site to use a single fixed room as requested
