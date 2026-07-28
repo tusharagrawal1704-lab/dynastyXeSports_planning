@@ -14,7 +14,7 @@ export interface PeerUser {
   isSpeaking?: boolean;
 }
 
-const DAILY_DOMAIN = 'https://dynastyXesports.daily.co'; // Temporary/placeholder domain
+const DAILY_DOMAIN = 'https://dynastyxesports.daily.co'; // Temporary/placeholder domain
 
 export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: string; userName?: string }) {
   const activeRoomId = (roomCode || getRoomIdFromUrl()).toUpperCase().trim();
