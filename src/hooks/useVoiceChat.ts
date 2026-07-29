@@ -228,8 +228,8 @@ export function useVoiceChat({ roomCode, userName = 'DXxPlayer' }: { roomCode?: 
         setPeers((prev) => prev.filter((p) => p.id !== String(user.uid)));
       });
 
-      // Join the channel (App ID, Channel Name, Token (null for testing mode), UID)
-      const uid = await client.join(AGORA_APP_ID, targetRoom, null, null);
+      // Join the channel (App ID, Channel Name, Token, UID)
+      const uid = await client.join(AGORA_APP_ID, targetRoom, '007eJxTYNi0RPXTcx3tR22bjhhEq0SuuG1n19J+PuNkY8fn17ee352jwJBqnGxikmZmZpRkYWlinGSelGaaaGxgapRkbGFokGRmmDopM6shkJFhytsgRkYGCATx2RlSKnQNTAxNGBgAkfwidQ==', null);
       myUidRef.current = uid;
 
       // Create and publish local audio track
